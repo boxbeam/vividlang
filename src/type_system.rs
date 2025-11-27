@@ -10,6 +10,7 @@ use crate::{
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Type {
     Int,
+    Bool,
 }
 
 impl Type {
@@ -17,12 +18,13 @@ impl Type {
     pub fn byte_size(&self) -> usize {
         match self {
             Type::Int => std::mem::size_of::<i64>(),
+            Type::Bool => std::mem::size_of::<bool>(),
         }
     }
 
     /// Returns the size, measured in units of 64 bits
     pub fn size(&self) -> usize {
-        self.byte_size() / std::mem::size_of::<i64>()
+        ((self.byte_size() + 3) / 4) * 4
     }
 }
 
@@ -130,6 +132,7 @@ impl Constraint {
 pub fn expr_constraint(expr: &Expr, scope: &Scope) -> Result<Constraint, ResolveError> {
     Ok(match expr {
         Expr::Int(_) => Constraint::Concrete(Type::Int),
+        Expr::Bool(_) => Constraint::Concrete(Type::Int),
         Expr::Var(name) => scope.lookup(name).cloned().unwrap_or_default(),
         Expr::BinOp(op, l, r) => operation_constraint(op.clone(), l, r, scope)?,
         Expr::Neg(expr) => expr_constraint(expr, scope)?,
@@ -151,8 +154,12 @@ pub fn operation_constraint(
 ) -> Result<Constraint, ResolveError> {
     use Operation as O;
     match operation {
-        O::Add | O::Sub | O::Div | O::Mul | O::Gt | O::Lt | O::Gte | O::Lte | O::Eq => {
+        O::Add | O::Sub | O::Div | O::Mul => {
             Ok(expr_constraint(l, scope)?.merge(&expr_constraint(r, scope)?, &scope.global)?)
+        }
+        O::Gt | O::Lt | O::Gte | O::Lte | O::Eq => {
+            expr_constraint(l, scope)?.merge(&expr_constraint(r, scope)?, &scope.global)?;
+            Ok(Constraint::Concrete(Type::Bool))
         }
     }
 }

@@ -93,6 +93,7 @@ fn translate_expr(
 ) -> Result<crate::Expr, ResolveError> {
     Ok(match expr {
         Expr::Int(i) => crate::Expr::Int(i),
+        Expr::Bool(b) => crate::Expr::Bool(b),
         Expr::Var(var) => crate::Expr::Local(resolve_addr(&var, scope, layout)?),
         Expr::BinOp(op, l, r) => crate::Expr::BinOp(
             op,

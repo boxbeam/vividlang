@@ -71,6 +71,7 @@ impl Operation {
 pub(crate) enum Expr {
     Global { size: usize, addr: usize },
     Int(i64),
+    Bool(bool),
     Local(usize),
     BinOp(Operation, Box<Expr>, Box<Expr>),
     IntNeg(Box<Expr>),
@@ -120,6 +121,15 @@ where
     }
 }
 
+fn make_lit<T>(val: T) -> Func<'static>
+where
+    T: Clone + 'static,
+{
+    make_func(move |stack| {
+        stack.set_val(val.clone());
+    })
+}
+
 fn make_func_cont<'a, F, C>(f: F, cont: C) -> Func<'a>
 where
     C: MaybeCont + 'a,
@@ -153,9 +163,8 @@ impl<'a> Func<'a> {
 impl Expr {
     fn compile(self) -> Func<'static> {
         let func = match self {
-            Expr::Int(lit) => make_func(move |stack| {
-                stack.set_val(lit);
-            }),
+            Expr::Int(i) => make_lit(i),
+            Expr::Bool(b) => make_lit(b),
             Expr::Local(pos) => make_func(move |stack| {
                 let val = *stack.get::<i64>(pos);
                 stack.set_val(val);
@@ -193,7 +202,7 @@ impl Expr {
     #[allow(unused)]
     fn is_const(&self) -> bool {
         match self {
-            Expr::Int(_) => true,
+            Expr::Int(_) | Expr::Bool(_) => true,
             Expr::Local(_) => false,
             Expr::BinOp(_, l, r) => l.is_const() && r.is_const(),
             Expr::IntNeg(expr) => expr.is_const(),

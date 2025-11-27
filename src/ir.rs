@@ -17,6 +17,7 @@ pub enum Operation {
 
 pub enum Expr {
     Int(i64),
+    Bool(bool),
     Var(Rc<str>),
     BinOp(Operation, Box<Self>, Box<Self>),
     IfElse(Box<Self>, Block, Block),

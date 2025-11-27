@@ -1,8 +1,2 @@
-let x = 1
-let y = 2
-input x
-print if x == 5 {
-	x
-} else {
-	y
-}
+let z = 1 == 1
+z = 4
