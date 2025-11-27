@@ -4,10 +4,12 @@ use vm::StackGuard;
 
 mod compile_bytecode;
 pub mod ir;
-pub mod registry;
+mod registry;
 pub mod scope;
-pub mod type_system;
+mod type_system;
 pub mod vm;
+
+pub use type_system::ResolveError;
 
 #[derive(Clone, Copy)]
 pub enum Operation {
@@ -78,7 +80,7 @@ impl Operation {
     }
 }
 
-pub enum Expr {
+pub(crate) enum Expr {
     Global { size: usize, addr: usize },
     Int(i64),
     Local(usize),
@@ -88,7 +90,7 @@ pub enum Expr {
     IfElse(Box<Expr>, Vec<Stmt>, Vec<Stmt>),
 }
 
-pub enum Stmt {
+pub(crate) enum Stmt {
     Expr(Expr),
     Assign64(usize, Expr),
     Assign { dst: usize, size: usize, val: Expr },
@@ -101,14 +103,14 @@ pub type State<'a> = StackGuard<'a>;
 
 type RawFunc = for<'a> fn(*const (), &'a mut State);
 
-pub struct Func<'a> {
+pub(crate) struct Func<'a> {
     f: RawFunc,
     data: *const (),
     drop: fn(*const ()),
     phantom: PhantomData<&'a ()>,
 }
 
-pub fn make_func<'a, F>(f: F) -> Func<'a>
+fn make_func<'a, F>(f: F) -> Func<'a>
 where
     F: Fn(&mut State) + 'a,
 {
@@ -296,7 +298,7 @@ fn compile_stmt_continuation<C: MaybeCont + 'static>(stmt: Stmt, next: C) -> Fun
     }
 }
 
-pub fn compile_stmts(mut stmts: Vec<Stmt>) -> Func<'static> {
+fn compile_stmts(mut stmts: Vec<Stmt>) -> Func<'static> {
     let Some(last) = stmts.pop() else {
         return make_func(|_| ());
     };

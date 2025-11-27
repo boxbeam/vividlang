@@ -24,7 +24,7 @@ impl Default for Vm {
 
 pub struct Function {
     pub stack_size: usize,
-    pub func: Func<'static>,
+    pub(crate) func: Func<'static>,
 }
 
 impl Vm {

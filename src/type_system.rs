@@ -157,14 +157,6 @@ pub fn operation_constraint(
     }
 }
 
-pub fn block_constraint(block: &Block, scope: &Scope) -> Result<Constraint, ResolveError> {
-    let last = block.last();
-    let Some(Stmt::Expr(inner)) = last else {
-        return Ok(Constraint::Unknown);
-    };
-    expr_constraint(inner, scope)
-}
-
 pub fn resolve_id(name: &Rc<str>, scope: &Scope) -> Result<Id<Constraint>, ResolveError> {
     scope
         .lookup_id(name)

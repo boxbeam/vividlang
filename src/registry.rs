@@ -91,15 +91,6 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
         self.get(self.lookup_id(key)?.raw())
     }
 
-    pub fn lookup_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let id = self.lookup_id(key)?.raw();
-        self.entries.get_mut(id)
-    }
-
     /// Unbinds a name from the registry, but does not remove the entry
     pub fn unbind<Q: ?Sized>(&mut self, key: &Q)
     where
@@ -114,14 +105,6 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
 
     pub fn len(&self) -> usize {
         self.entries.len()
-    }
-
-    pub fn entries(&self) -> &[V] {
-        &*self.entries
-    }
-
-    pub fn keys(&self) -> &[K] {
-        &*self.reverse_lookup
     }
 }
 

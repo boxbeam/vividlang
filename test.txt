@@ -1,3 +1,8 @@
 let x = 1
 let y = 2
-print x + y
+input x
+print if x == 5 {
+	x
+} else {
+	y
+}
