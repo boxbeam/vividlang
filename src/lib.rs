@@ -6,8 +6,10 @@ mod compile_bytecode;
 pub mod ir;
 pub mod registry;
 pub mod scope;
+pub mod type_system;
 pub mod vm;
 
+#[derive(Clone, Copy)]
 pub enum Operation {
     Add,
     Sub,
@@ -89,9 +91,10 @@ pub enum Expr {
 pub enum Stmt {
     Expr(Expr),
     Assign64(usize, Expr),
+    Assign { dst: usize, size: usize, val: Expr },
     Print(Expr),
     Input(usize),
-    If(Box<Expr>, Vec<Stmt>),
+    If(Expr, Vec<Stmt>),
 }
 
 pub type State<'a> = StackGuard<'a>;
@@ -270,13 +273,26 @@ fn compile_stmt_continuation<C: MaybeCont + 'static>(stmt: Stmt, next: C) -> Fun
         }
         Stmt::Input(pos) => make_func_cont(
             move |stack| {
-                println!("Input");
                 let line = std::io::stdin().lines().next().unwrap().unwrap();
                 let num: i64 = line.parse().unwrap();
                 *stack.get(pos) = num;
             },
             next,
         ),
+        Stmt::Assign { dst, size, val } => {
+            let val = val.compile();
+            make_func_cont(
+                move |stack| {
+                    let dst: *mut i64 = stack.get_raw(dst);
+                    let src: *mut i64 = stack.val_raw();
+                    val.invoke(stack);
+                    for i in 0..size {
+                        unsafe { *dst.offset(i as isize) = *src.offset(i as isize) };
+                    }
+                },
+                next,
+            )
+        }
     }
 }
 

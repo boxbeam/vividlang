@@ -1,17 +1,30 @@
-use std::rc::Rc;
+use std::fmt::Debug;
+use std::{collections::HashMap, rc::Rc};
 
+use crate::compile_bytecode::translate_ast;
+use crate::registry::Id;
+use crate::type_system::{Constraint, ResolveError};
 use crate::{
-    Func, compile_bytecode,
     ir::Stmt,
-    registry::{NoRedefine, Registry, Shadowing},
+    registry::{Registry, Shadowing},
+    type_system::{Trait, TraitImpl, Type},
 };
 
 use super::vm::*;
 
 #[derive(Hash, PartialEq, Eq, Clone)]
-pub struct Namespace(Rc<str>);
+pub struct Namespace {
+    name: Rc<str>,
+}
+
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct GlobalKey(Namespace, Rc<str>);
+
+impl Debug for GlobalKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", self.0.name, self.1)
+    }
+}
 
 impl Namespace {
     pub fn key(&self, name: impl Into<Rc<str>>) -> GlobalKey {
@@ -42,15 +55,17 @@ impl GlobalVariable {
 
 #[derive(Default)]
 pub struct GlobalScope {
-    namespaces: Registry<Rc<str>, Namespace, NoRedefine>,
-    globals: Registry<GlobalKey, GlobalVariable, NoRedefine>,
+    namespaces: Registry<Rc<str>, Namespace>,
+    globals: Registry<GlobalKey, GlobalVariable>,
+    traits: Registry<GlobalKey, Trait>,
+    impls: HashMap<Type, HashMap<Trait, TraitImpl>>,
     globals_size: usize,
 }
 
 impl GlobalScope {
     /// Create a namespace, if it hasn't been created yet.
     pub fn create_namespace(&mut self, name: Rc<str>) -> Option<Namespace> {
-        let namespace = Namespace(name.clone());
+        let namespace = Namespace { name: name.clone() };
         self.namespaces.insert(name, namespace.clone())?;
         Some(namespace)
     }
@@ -79,49 +94,77 @@ impl GlobalScope {
         Some(addr)
     }
 
+    /// Attempts to register a trait.
+    /// Returns nothing if the trait is already registered.
+    pub fn register_trait(&mut self, key: GlobalKey) -> Option<Trait> {
+        let trait_ = Trait { key: key.clone() };
+        self.traits.insert(key, trait_.clone())?;
+        Some(trait_)
+    }
+
+    pub fn implement_trait(&mut self, typ: Type, trait_impl: TraitImpl) -> bool {
+        let impls = self.impls.entry(typ).or_default();
+        let trait_ = trait_impl.get_trait().clone();
+        if impls.contains_key(&trait_) {
+            return false;
+        }
+        impls.insert(trait_, trait_impl);
+        true
+    }
+
+    pub fn is_implemented(&self, typ: &Type, trait_: &Trait) -> bool {
+        self.impls
+            .get(typ)
+            .is_some_and(|impls| impls.contains_key(trait_))
+    }
+
     pub fn lookup_global(&self, key: &GlobalKey) -> Option<&GlobalVariable> {
         self.globals.lookup(&key)
     }
 
-    pub fn compile_function(&mut self, namespace: Namespace, stmts: Vec<Stmt>) -> Function {
-        let mut layout = self.layout(namespace);
-        let scope = layout.scope();
-        let func = compile_bytecode::compile_block(stmts, scope);
-        let func = crate::compile_stmts(func);
-        Function {
+    pub fn compile_function(
+        &mut self,
+        namespace: Namespace,
+        stmts: Vec<Stmt>,
+    ) -> Result<Function, ResolveError> {
+        let layout = self.layout(namespace);
+        let bytecode = translate_ast(stmts, layout)?;
+        let func = crate::compile_stmts(bytecode.stmts);
+        Ok(Function {
             func,
-            stack_size: layout.size(),
-        }
+            stack_size: bytecode.stack_size,
+        })
     }
 
-    pub fn layout(&mut self, namespace: Namespace) -> StackLayout {
-        StackLayout {
+    pub fn layout(&mut self, namespace: Namespace) -> StackLayoutBuilder {
+        StackLayoutBuilder {
             namespace,
             global: self,
             variables: Default::default(),
-            size: 0,
         }
     }
 }
 
-pub struct StackLayout<'a> {
+pub struct StackLayoutBuilder<'a> {
     namespace: Namespace,
     pub global: &'a mut GlobalScope,
-    variables: Registry<Rc<str>, Type, Shadowing>,
-    size: usize,
+    variables: Registry<Rc<str>, Constraint, Shadowing>,
 }
 
-impl StackLayout<'_> {
-    pub fn size(&self) -> usize {
-        self.size
-    }
+pub struct StackLayout {
+    pub types: Vec<(Type, usize)>,
+    pub size: usize,
+}
 
+#[derive(Debug)]
+pub struct MissingTypes(pub Vec<Rc<str>>);
+
+impl StackLayoutBuilder<'_> {
     pub fn scope(&mut self) -> Scope {
         Scope {
             namespace: self.namespace.clone(),
             global: &mut self.global,
             variables: &mut self.variables,
-            size: &mut self.size,
             locals: vec![],
         }
     }
@@ -129,14 +172,34 @@ impl StackLayout<'_> {
     pub fn namespace(&self) -> &Namespace {
         &self.namespace
     }
+
+    pub fn compute_layout(&mut self) -> Result<StackLayout, ResolveError> {
+        let mut missing_types: Vec<Rc<str>> = vec![];
+
+        let mut size = 0;
+        let mut types: Vec<(Type, usize)> = vec![];
+        for i in 0..self.variables.len() {
+            let name = self.variables.key(i);
+            let constraint = self.variables.get(i).unwrap();
+            let Constraint::Concrete(t) = constraint else {
+                missing_types.push(name.clone());
+                continue;
+            };
+
+            types.push((t.clone(), size));
+            size += t.size();
+        }
+        self.variables = Default::default();
+
+        Ok(StackLayout { types, size })
+    }
 }
 
 pub struct Scope<'a> {
     namespace: Namespace,
     pub global: &'a mut GlobalScope,
-    variables: &'a mut Registry<Rc<str>, Type, Shadowing>,
+    variables: &'a mut Registry<Rc<str>, Constraint, Shadowing>,
     locals: Vec<Rc<str>>,
-    size: &'a mut usize,
 }
 
 impl<'a> Scope<'a> {
@@ -146,32 +209,44 @@ impl<'a> Scope<'a> {
             namespace: self.namespace.clone(),
             variables: &mut self.variables,
             global: &mut self.global,
-            size: &mut self.size,
             locals: vec![],
         }
     }
 
     /// Declares a local variable, and returns its address within the scope.
-    pub fn declare(&mut self, name: impl Into<Rc<str>>, typ: Type) -> usize {
-        let typ_size = typ.size();
+    pub fn declare(&mut self, name: impl Into<Rc<str>>) -> Id<Constraint> {
         let name = name.into();
 
         self.locals.push(name.clone());
-        self.variables.insert(name, typ);
+        let var_id = self
+            .variables
+            .insert(name, Constraint::Unknown)
+            .expect("Can always shadow");
 
-        let address = *self.size;
-        *self.size += typ_size;
-        address
+        var_id
     }
 
-    /// Looks up the relative address of a variable.
-    pub fn lookup(&mut self, name: &str) -> Option<usize> {
-        let index = self.variables.lookup_id(name)?.raw();
-        let addr = self.variables.entries()[..index]
-            .iter()
-            .map(|t| t.size())
-            .sum::<usize>();
-        Some(addr)
+    pub fn constrain(
+        &mut self,
+        id: Id<Constraint>,
+        constraint: Constraint,
+    ) -> Result<(), ResolveError> {
+        let current = self
+            .variables
+            .get_mut(id.raw())
+            .expect("ID is always valid");
+
+        *current = current.merge(&constraint, &self.global)?;
+        Ok(())
+    }
+
+    pub fn lookup_id(&self, name: &str) -> Option<Id<Constraint>> {
+        self.variables.lookup_id(name)
+    }
+
+    /// Looks up the constraint of a variable.
+    pub fn lookup(&self, name: &str) -> Option<&Constraint> {
+        self.variables.lookup(name)
     }
 
     pub fn namespace(&self) -> &Namespace {

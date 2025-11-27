@@ -7,9 +7,9 @@ pub type Block = Vec<Stmt>;
 pub enum Expr {
     Int(i64),
     Var(Rc<str>),
-    BinOp(Operation, Box<Expr>, Box<Expr>),
-    IfElse(Box<Expr>, Block, Block),
-    Neg(Box<Expr>),
+    BinOp(Operation, Box<Self>, Box<Self>),
+    IfElse(Box<Self>, Block, Block),
+    Neg(Box<Self>),
 }
 
 pub enum Cmp {

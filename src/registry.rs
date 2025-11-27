@@ -20,12 +20,13 @@ impl<T> Id<T> {
 /// Append-only registry which allows different strategies for handling name collisions.
 /// Entries may be unbound from their names, but never removed from the underlying memory,
 /// ensuring IDs returned from the registry are always valid against it.
-pub struct Registry<K, V, C>
+pub struct Registry<K, V, C = NoRedefine>
 where
     K: Hash + Eq,
     C: CollisionStrategy,
 {
     entries: Vec<V>,
+    reverse_lookup: Vec<K>,
     by_name: HashMap<K, C::Storage>,
 }
 
@@ -33,6 +34,7 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Default for Registry<K, V, C> {
     fn default() -> Self {
         Self {
             entries: vec![],
+            reverse_lookup: vec![],
             by_name: HashMap::new(),
         }
     }
@@ -47,16 +49,29 @@ pub trait CollisionStrategy {
 }
 
 impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
-    pub fn insert(&mut self, key: K, value: V) -> Option<Id<V>> {
+    pub fn insert(&mut self, key: K, value: V) -> Option<Id<V>>
+    where
+        K: Clone,
+    {
         let id = self.entries.len();
+        let key_clone = key.clone();
         let mut entry = self.by_name.entry(key).or_default();
         C::insert(&mut entry, id)?;
+        self.reverse_lookup.push(key_clone);
         self.entries.push(value);
         Some(to_id(id))
     }
 
     pub fn get(&self, id: usize) -> Option<&V> {
         self.entries.get(id)
+    }
+
+    pub fn get_mut(&mut self, id: usize) -> Option<&mut V> {
+        self.entries.get_mut(id)
+    }
+
+    pub fn key(&self, id: usize) -> &K {
+        &self.reverse_lookup[id]
     }
 
     pub fn lookup_id<Q: ?Sized>(&self, key: &Q) -> Option<Id<V>>
@@ -74,6 +89,15 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
         Q: Hash + Eq,
     {
         self.get(self.lookup_id(key)?.raw())
+    }
+
+    pub fn lookup_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let id = self.lookup_id(key)?.raw();
+        self.entries.get_mut(id)
     }
 
     /// Unbinds a name from the registry, but does not remove the entry
@@ -94,6 +118,10 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
 
     pub fn entries(&self) -> &[V] {
         &*self.entries
+    }
+
+    pub fn keys(&self) -> &[K] {
+        &*self.reverse_lookup
     }
 }
 

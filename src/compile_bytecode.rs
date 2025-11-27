@@ -1,66 +1,109 @@
-use crate::{Func, ir::*, scope::Scope, vm::Type};
+use std::rc::Rc;
 
-pub(crate) fn compile_expr(expr: Expr, scope: &mut Scope) -> crate::Expr {
-    match expr {
-        Expr::Int(lit) => crate::Expr::Int(lit),
-        Expr::Var(name) => {
-            if let Some(local) = scope.lookup(&name) {
-                return crate::Expr::Local(local);
-            }
-            let key = scope.namespace().key(name);
-            if let Some(global) = scope.global.lookup_global(&key) {
-                let size = global.typ().size();
-                let addr = global.addr();
-                return crate::Expr::Global { size, addr };
-            }
-            todo!()
-        }
-        Expr::BinOp(op, l, r) => {
-            let l = compile_expr(*l, scope);
-            let r = compile_expr(*r, scope);
-            crate::Expr::BinOp(op, l.into(), r.into())
-        }
-        Expr::Neg(expr) => {
-            let expr = compile_expr(*expr, scope);
-            crate::Expr::IntNeg(expr.into())
-        }
-        Expr::IfElse(expr, if_case, else_case) => {
-            let expr = compile_expr(*expr, scope);
-            let if_case = compile_block(if_case, scope.scope());
-            let else_case = compile_block(else_case, scope.scope());
-            crate::Expr::IfElse(expr.into(), if_case, else_case)
-        }
-    }
+use crate::{
+    ir::*,
+    scope::{Scope, StackLayout, StackLayoutBuilder},
+    type_system::{ResolveError, Type, resolve_id, resolve_stack_layout},
+};
+
+fn resolve_var<'a>(
+    name: &Rc<str>,
+    scope: &Scope,
+    layout: &'a StackLayout,
+) -> Result<&'a (Type, usize), ResolveError> {
+    let id = resolve_id(name, scope)?;
+    Ok(&layout.types[id.raw()])
 }
 
-pub(crate) fn compile_block(stmts: Block, mut scope: Scope) -> Vec<crate::Stmt> {
-    let mut output = vec![];
-    for stmt in stmts {
-        let stmt = match stmt {
-            Stmt::Expr(expr) => crate::Stmt::Expr(compile_expr(expr, &mut scope)),
-            Stmt::Declare(name, expr) => {
-                let pos = scope.declare(name, Type::Int);
-                let expr = compile_expr(expr, &mut scope);
-                crate::Stmt::Assign64(pos, expr)
+fn resolve_addr(
+    name: &Rc<str>,
+    scope: &Scope,
+    layout: &StackLayout,
+) -> Result<usize, ResolveError> {
+    Ok(resolve_var(name, scope, layout)?.1)
+}
+
+pub struct CompiledBlock {
+    pub stmts: Vec<crate::Stmt>,
+    pub stack_size: usize,
+}
+
+pub fn translate_ast(
+    block: Block,
+    mut builder: StackLayoutBuilder,
+) -> Result<CompiledBlock, ResolveError> {
+    let scope = builder.scope();
+    resolve_stack_layout(&block, scope)?;
+    let layout = builder.compute_layout()?;
+
+    let mut scope = builder.scope();
+    let stmts = translate_block(block, &mut scope, &layout)?;
+    Ok(CompiledBlock {
+        stmts,
+        stack_size: layout.size,
+    })
+}
+
+fn translate_block(
+    block: Block,
+    scope: &mut Scope,
+    layout: &StackLayout,
+) -> Result<Vec<crate::Stmt>, ResolveError> {
+    let mut out = vec![];
+
+    for stmt in block {
+        out.push(match stmt {
+            Stmt::Expr(expr) => crate::Stmt::Expr(translate_expr(expr, scope, layout)?),
+            Stmt::Declare(var, expr) => {
+                scope.declare(var.clone());
+                crate::Stmt::Assign64(
+                    resolve_addr(&var, scope, layout)?,
+                    translate_expr(expr, scope, layout)?,
+                )
             }
-            Stmt::Assign(name, expr) => {
-                let pos = scope.lookup(&name).unwrap();
-                let expr = compile_expr(expr, &mut scope);
-                crate::Stmt::Assign64(pos, expr)
+            Stmt::Assign(var, expr) => {
+                let (typ, addr) = resolve_var(&var, scope, layout)?;
+                let expr = translate_expr(expr, scope, layout)?;
+                if typ.size() == 1 {
+                    crate::Stmt::Assign64(*addr, expr)
+                } else {
+                    crate::Stmt::Assign {
+                        dst: *addr,
+                        size: typ.size(),
+                        val: expr,
+                    }
+                }
             }
-            Stmt::Print(expr) => crate::Stmt::Print(compile_expr(expr, &mut scope)),
-            Stmt::If(expr, stmts) => {
-                let expr = compile_expr(expr, &mut scope);
-                let block = compile_block(stmts, scope.scope());
-                crate::Stmt::If(expr.into(), block)
-            }
-            Stmt::Input(name) => {
-                let pos = scope.lookup(&name).unwrap();
-                crate::Stmt::Input(pos)
-            }
-        };
-        output.push(stmt);
+            Stmt::Input(var) => crate::Stmt::Input(resolve_addr(&var, scope, layout)?),
+            Stmt::Print(expr) => crate::Stmt::Print(translate_expr(expr, scope, layout)?),
+            Stmt::If(expr, stmts) => crate::Stmt::If(
+                translate_expr(expr, scope, layout)?.into(),
+                translate_block(stmts, scope, layout)?,
+            ),
+        })
     }
 
-    output
+    Ok(out)
+}
+
+fn translate_expr(
+    expr: Expr,
+    scope: &mut Scope,
+    layout: &StackLayout,
+) -> Result<crate::Expr, ResolveError> {
+    Ok(match expr {
+        Expr::Int(i) => crate::Expr::Int(i),
+        Expr::Var(var) => crate::Expr::Local(resolve_addr(&var, scope, layout)?),
+        Expr::BinOp(op, l, r) => crate::Expr::BinOp(
+            op,
+            translate_expr(*l, scope, layout)?.into(),
+            translate_expr(*r, scope, layout)?.into(),
+        ),
+        Expr::IfElse(expr, if_case, else_case) => crate::Expr::IfElse(
+            translate_expr(*expr, scope, layout)?.into(),
+            translate_block(if_case, scope, layout)?,
+            translate_block(else_case, scope, layout)?,
+        ),
+        Expr::Neg(expr) => crate::Expr::IntNeg(translate_expr(*expr, scope, layout)?.into()),
+    })
 }

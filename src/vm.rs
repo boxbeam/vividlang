@@ -59,21 +59,26 @@ impl<'a> StackGuard<'a> {
     }
 
     pub fn get<T>(&mut self, addr: usize) -> &mut T {
-        let absolute_addr = self.vm.stack_base + addr;
-        let stack = self.vm.stack[absolute_addr..].as_mut_ptr() as *mut T;
+        let stack = self.get_raw(addr);
         unsafe { &mut *stack }
     }
 
-    fn val<T>(&mut self) -> *mut T {
+    pub fn get_raw<T>(&mut self, addr: usize) -> *mut T {
+        let absolute_addr = self.vm.stack_base + addr;
+        let stack = self.vm.stack[absolute_addr..].as_mut_ptr() as *mut T;
+        stack
+    }
+
+    pub fn val_raw<T>(&mut self) -> *mut T {
         self.vm.return_register.get() as *mut T
     }
 
     pub fn get_val<T>(&mut self) -> T {
-        unsafe { std::ptr::read(self.val()) }
+        unsafe { std::ptr::read(self.val_raw()) }
     }
 
     pub fn set_val<T>(&mut self, val: T) {
-        unsafe { *self.val() = val }
+        unsafe { *self.val_raw() = val }
     }
 
     pub fn fetch_global_raw(&mut self, addr: usize, len: usize) {
@@ -105,23 +110,4 @@ pub const fn destructor<T>() -> fn(*mut ()) {
 
 pub const fn stack_size<T>() -> usize {
     std::mem::size_of::<T>() / std::mem::size_of::<i64>()
-}
-
-#[derive(Clone)]
-pub enum Type {
-    Int,
-}
-
-impl Type {
-    /// Returns the size, measured in bytes
-    pub fn byte_size(&self) -> usize {
-        match self {
-            Type::Int => std::mem::size_of::<i64>(),
-        }
-    }
-
-    /// Returns the size, measured in units of 64 bits
-    pub fn size(&self) -> usize {
-        self.byte_size() / 4
-    }
 }

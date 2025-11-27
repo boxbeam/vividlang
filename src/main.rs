@@ -1,9 +1,4 @@
-use interpreter_backend::{
-    Operation,
-    ir::*,
-    scope::GlobalScope,
-    vm::{Function, Vm},
-};
+use interpreter_backend::{Operation, ir::*, scope::GlobalScope, vm::Vm};
 use std::rc::Rc;
 use untwine::parser;
 
@@ -75,7 +70,9 @@ fn main() {
         Ok(stmts) => {
             let mut global = GlobalScope::default();
             let root_namespace = global.root_namespace().unwrap();
-            let main = global.compile_function(root_namespace.clone(), stmts);
+            let main = global
+                .compile_function(root_namespace.clone(), stmts)
+                .unwrap();
 
             let mut vm = Vm::default();
             let main_id = vm.register_function(main);
