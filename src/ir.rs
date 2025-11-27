@@ -1,18 +1,13 @@
 use std::rc::Rc;
 
-use crate::Operation;
-
 pub type Block = Vec<Stmt>;
 
-pub enum Expr {
-    Int(i64),
-    Var(Rc<str>),
-    BinOp(Operation, Box<Self>, Box<Self>),
-    IfElse(Box<Self>, Block, Block),
-    Neg(Box<Self>),
-}
-
-pub enum Cmp {
+#[derive(Clone, Copy)]
+pub enum Operation {
+    Add,
+    Sub,
+    Mul,
+    Div,
     Gt,
     Lt,
     Gte,
@@ -20,16 +15,12 @@ pub enum Cmp {
     Eq,
 }
 
-impl Cmp {
-    pub fn to_operation(&self) -> Operation {
-        match self {
-            Cmp::Gt => Operation::Gt,
-            Cmp::Lt => Operation::Lt,
-            Cmp::Gte => Operation::Gte,
-            Cmp::Lte => Operation::Lte,
-            Cmp::Eq => Operation::Eq,
-        }
-    }
+pub enum Expr {
+    Int(i64),
+    Var(Rc<str>),
+    BinOp(Operation, Box<Self>, Box<Self>),
+    IfElse(Box<Self>, Block, Block),
+    Neg(Box<Self>),
 }
 
 pub enum Stmt {

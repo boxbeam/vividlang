@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use ir::Operation;
 use vm::StackGuard;
 
 mod compile_bytecode;
@@ -10,19 +11,6 @@ mod type_system;
 pub mod vm;
 
 pub use type_system::ResolveError;
-
-#[derive(Clone, Copy)]
-pub enum Operation {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Gt,
-    Lt,
-    Gte,
-    Lte,
-    Eq,
-}
 
 fn make_i64_op(
     l: Func<'static>,

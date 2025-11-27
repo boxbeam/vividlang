@@ -1,4 +1,4 @@
-use interpreter_backend::{Operation, ir::*, scope::GlobalScope, vm::Vm};
+use interpreter_backend::{ir::*, scope::GlobalScope, vm::Vm};
 use std::rc::Rc;
 use untwine::parser;
 
@@ -15,12 +15,12 @@ parser! {
     term = (negated_term | nested_expr | int | #[convert(Expr::Var)] ident) -> Expr;
 
     cmp_op = match {
-        ">=" => Cmp::Gte,
-        "<=" => Cmp::Lte,
-        "==" => Cmp::Eq,
-        "<" => Cmp::Lt,
-        ">" => Cmp::Gt,
-    } -> Cmp;
+        ">=" => Operation::Gte,
+        "<=" => Operation::Lte,
+        "==" => Operation::Eq,
+        "<" => Operation::Lt,
+        ">" => Operation::Gt,
+    } -> Operation;
 
     block = "{" lbsep? stmts lbsep? "}" -> Block;
 
@@ -31,7 +31,7 @@ parser! {
     }
 
     cmp: first=add rest=(sep? cmp_op sep? add)* -> Expr {
-        rest.into_iter().fold(first, |l, (op, r)| Expr::BinOp(op.to_operation(), l.into(), r.into()))
+        rest.into_iter().fold(first, |l, (op, r)| Expr::BinOp(op, l.into(), r.into()))
     }
 
     add: first=mul rest=(sep? ["+-"] sep? mul)* -> Expr {
