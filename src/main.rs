@@ -1,13 +1,27 @@
-use interpreter_backend::{ir::*, scope::GlobalScope, vm::Vm};
+use interpreter_backend::{
+    ir::*,
+    scope::GlobalScope,
+    type_system::{Constraint, Type},
+    vm::Vm,
+};
 use std::rc::Rc;
 use untwine::parser;
 
 parser! {
     sep = #[" \t\r"]+;
     lbsep = #{|c| c.is_ascii_whitespace()}+;
+    comma = sep? "," sep?;
 
     int: num=<'0'-'9'+> -> Expr { Expr::Int(num.parse().unwrap()) }
     ident: name=<{|c| c.is_ascii_alphabetic()}+> -> Rc<str> { name.into() }
+    var: name=ident typ=(sep? ":" sep? typ)? -> Variable {
+        let constraint = typ.map(Constraint::Concrete).unwrap_or_default();
+        Variable { name, typ: constraint }
+    }
+    typ = match {
+        "Int" => Type::Int,
+        "Bool" => Type::Bool,
+    } -> Type;
 
     nested_expr = "(" sep? expr sep? ")" -> Expr;
     negated_term: '-' sep? expr=term -> Expr { Expr::Neg(expr.into()) }
@@ -59,24 +73,47 @@ parser! {
         if_stmt=if_stmt => if_stmt,
     } -> Stmt;
 
+    args = "(" lbsep? var$comma* lbsep? ")" -> Vec<Variable>;
+    return_type: typ=("->" lbsep? typ)? -> Constraint {
+        typ.map(Constraint::Concrete).unwrap_or_default()
+    }
+    function: "fn" sep name=ident lbsep? args=args lbsep? ret=return_type lbsep? body=block -> FunctionDef {
+        let signature = FunctionSignature { return_type: ret, arguments: args.into() };
+
+        FunctionDef {
+            name,
+            signature,
+            body
+        }
+    }
+
     lb = (sep? #["\n;"] sep?)+;
-    pub stmts = lb? stmt$lb* lb? -> Vec<Stmt>;
+    stmts = lb? stmt$lb* lb? -> Vec<Stmt>;
+    pub program = lb? function$lb* lb? -> Vec<FunctionDef>;
 }
 
 fn main() {
     let src = include_str!("../test.txt");
-    let parsed = untwine::parse_pretty(stmts, src, Default::default());
+    let parsed = untwine::parse_pretty(program, src, Default::default());
     match parsed {
-        Ok(stmts) => {
+        Ok(funcs) => {
             let mut global = GlobalScope::default();
-            let root_namespace = global.root_namespace().unwrap();
-            let main = global
-                .compile_function(root_namespace.clone(), stmts)
-                .unwrap();
+            let root_namespace = global.root_namespace();
+            for func in &funcs {
+                let key = root_namespace.key(func.name.clone());
+                global.declare_function(key, func.signature.clone());
+            }
 
-            let mut vm = Vm::default();
-            let main_id = vm.register_function(main);
-            vm.call_function(main_id);
+            for func in funcs {
+                let key = root_namespace.key(func.name.clone());
+                global.implement_function(key, func).unwrap();
+            }
+
+            let main_key = root_namespace.key("main");
+            let mut vm = global.compile(main_key).unwrap();
+
+            let entry_point = vm.entry_point().unwrap();
+            vm.call_function(entry_point);
         }
         Err(err) => println!("{err}"),
     }

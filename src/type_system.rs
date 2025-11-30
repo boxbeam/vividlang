@@ -4,13 +4,15 @@ use crate::{
     Operation,
     ir::{Block, Expr, Stmt},
     registry::Id,
-    scope::{GlobalKey, GlobalScope, MissingTypes, Scope},
+    scope::{GlobalKey, MissingTypes, Scope},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Type {
     Int,
     Bool,
+    Void,
+    Function(Rc<FunctionSignature>),
 }
 
 impl Type {
@@ -19,6 +21,8 @@ impl Type {
         match self {
             Type::Int => std::mem::size_of::<i64>(),
             Type::Bool => std::mem::size_of::<bool>(),
+            Type::Function(_) => std::mem::size_of::<i64>(),
+            Type::Void => 0,
         }
     }
 
@@ -31,6 +35,12 @@ impl Type {
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct Trait {
     pub(crate) key: GlobalKey,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub struct FunctionSignature {
+    pub args: Rc<[Type]>,
+    pub ret: Type,
 }
 
 #[derive(Clone)]
@@ -50,10 +60,11 @@ impl TraitImpl {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
 pub enum Constraint {
     Implements(Rc<[Trait]>),
     Concrete(Type),
+    Ref(Id<Constraint>),
     #[default]
     Unknown,
 }
@@ -62,6 +73,7 @@ pub enum Constraint {
 pub enum TypeError {
     Mismatch { expected: Type, found: Type },
     DoesNotImplement(Vec<Trait>),
+    CannotInvoke(Constraint),
 }
 
 #[derive(Debug)]
@@ -69,6 +81,7 @@ pub enum ResolveError {
     TypeError(TypeError),
     UndefinedIdentifier(Rc<str>),
     MissingTypes(MissingTypes),
+    MissingReturnType,
 }
 
 impl From<TypeError> for ResolveError {
@@ -84,16 +97,12 @@ impl From<MissingTypes> for ResolveError {
 }
 
 impl Constraint {
-    pub fn check(&self, typ: &Type, globals: &GlobalScope) -> Result<(), TypeError> {
-        self.merge(&Constraint::Concrete(typ.clone()), globals)?;
+    pub fn check(&self, typ: &Type, scope: &mut Scope) -> Result<(), TypeError> {
+        self.merge(&Constraint::Concrete(typ.clone()), scope)?;
         Ok(())
     }
 
-    pub fn merge(
-        &self,
-        other: &Constraint,
-        globals: &GlobalScope,
-    ) -> Result<Constraint, TypeError> {
+    pub fn merge(&self, other: &Constraint, scope: &mut Scope) -> Result<Constraint, TypeError> {
         use Constraint::*;
         match (self, other) {
             (Concrete(a), Concrete(b)) => {
@@ -109,7 +118,7 @@ impl Constraint {
             (Implements(traits), Concrete(c)) | (Concrete(c), Implements(traits)) => {
                 let not_implemented: Vec<Trait> = traits
                     .iter()
-                    .filter(|t| !globals.is_implemented(c, t))
+                    .filter(|t| !scope.global.is_implemented(c, t))
                     .cloned()
                     .collect();
                 if not_implemented.is_empty() {
@@ -125,40 +134,74 @@ impl Constraint {
                 Ok(Implements(set.into_iter().cloned().collect()))
             }
             (Unknown, c) | (c, Unknown) => Ok(c.clone()),
+            (Ref(a_id), Ref(b_id)) => {
+                if a_id == b_id {
+                    return Ok(scope.get_constraint(*a_id).unwrap().clone());
+                }
+                let a = scope.get_constraint(*a_id).unwrap();
+                let b = scope.get_constraint(*b_id).unwrap();
+                let combined = a.merge(&b, scope)?;
+                scope.constrain(*a_id, combined.clone());
+                scope.constrain(*b_id, combined.clone());
+                Ok(combined)
+            }
+            (Ref(id), other) | (other, Ref(id)) => {
+                let stored = scope.get_constraint(*id).unwrap();
+                let combined = stored.merge(&other, scope)?;
+                scope.constrain(*id, combined.clone());
+                Ok(combined)
+            }
         }
     }
 }
 
-pub fn expr_constraint(expr: &Expr, scope: &Scope) -> Result<Constraint, ResolveError> {
+pub fn constrain_expr(expr: &Expr, scope: &mut Scope) -> Result<Constraint, ResolveError> {
     Ok(match expr {
         Expr::Int(_) => Constraint::Concrete(Type::Int),
-        Expr::Bool(_) => Constraint::Concrete(Type::Int),
-        Expr::Var(name) => scope.lookup(name).cloned().unwrap_or_default(),
-        Expr::BinOp(op, l, r) => operation_constraint(op.clone(), l, r, scope)?,
-        Expr::Neg(expr) => expr_constraint(expr, scope)?,
+        Expr::Bool(_) => Constraint::Concrete(Type::Bool),
+        Expr::Var(name) => {
+            let id = scope
+                .lookup_id(name)
+                .ok_or_else(|| ResolveError::UndefinedIdentifier(name.clone()))?;
+            Constraint::Ref(id)
+        }
+        Expr::BinOp(op, l, r) => constrain_operation(op.clone(), l, r, scope)?,
+        Expr::Neg(expr) => constrain_expr(expr, scope)?,
         Expr::IfElse(_, if_case, _) => {
             let last = if_case.last();
             let Some(Stmt::Expr(inner)) = last else {
                 return Ok(Constraint::Unknown);
             };
-            expr_constraint(inner, scope)?
+            constrain_expr(inner, scope)?
+        }
+        Expr::FunctionCall { func, args } => {
+            let constraint = constrain_expr(&*func, scope)?;
+            let Constraint::Concrete(Type::Function(signature)) = constraint else {
+                return Err(ResolveError::TypeError(TypeError::CannotInvoke(constraint)));
+            };
+            for (func_arg, arg) in signature.arguments.iter().zip(args) {
+                let func_arg_type = &func_arg.typ;
+                let arg_type = constrain_expr(arg, scope)?;
+                func_arg_type.merge(&arg_type, scope)?;
+            }
+            signature.return_type.clone()
         }
     })
 }
 
-pub fn operation_constraint(
+pub fn constrain_operation(
     operation: Operation,
     l: &Expr,
     r: &Expr,
-    scope: &Scope,
+    scope: &mut Scope,
 ) -> Result<Constraint, ResolveError> {
     use Operation as O;
     match operation {
         O::Add | O::Sub | O::Div | O::Mul => {
-            Ok(expr_constraint(l, scope)?.merge(&expr_constraint(r, scope)?, &scope.global)?)
+            Ok(constrain_expr(l, scope)?.merge(&constrain_expr(r, scope)?, scope)?)
         }
         O::Gt | O::Lt | O::Gte | O::Lte | O::Eq => {
-            expr_constraint(l, scope)?.merge(&expr_constraint(r, scope)?, &scope.global)?;
+            constrain_expr(l, scope)?.merge(&constrain_expr(r, scope)?, scope)?;
             Ok(Constraint::Concrete(Type::Bool))
         }
     }
@@ -174,16 +217,16 @@ pub fn resolve_stack_layout(block: &Block, mut scope: Scope) -> Result<(), Resol
     for stmt in block {
         match stmt {
             Stmt::Expr(expr) | Stmt::Print(expr) => {
-                expr_constraint(expr, &scope)?;
+                constrain_expr(expr, &mut scope)?;
             }
             Stmt::Declare(var, expr) => {
                 let id = scope.declare(var.clone());
-                let typ = expr_constraint(expr, &scope)?;
+                let typ = constrain_expr(expr, &mut scope)?;
                 scope.constrain(id, typ)?;
             }
             Stmt::Assign(var, expr) => {
                 let id = resolve_id(var, &scope)?;
-                let typ = expr_constraint(expr, &scope)?;
+                let typ = constrain_expr(expr, &mut scope)?;
                 scope.constrain(id, typ)?;
             }
             Stmt::Input(var) => {
@@ -191,7 +234,7 @@ pub fn resolve_stack_layout(block: &Block, mut scope: Scope) -> Result<(), Resol
                 scope.constrain(id, Constraint::Concrete(Type::Int))?
             }
             Stmt::If(expr, stmts) => {
-                expr_constraint(expr, &scope)?;
+                constrain_expr(expr, &mut scope)?;
                 resolve_stack_layout(stmts, scope.scope())?;
             }
         }

@@ -1,8 +1,10 @@
 use std::rc::Rc;
 
+use crate::type_system::{Constraint, FunctionSignature};
+
 pub type Block = Vec<Stmt>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Operation {
     Add,
     Sub,
@@ -15,6 +17,7 @@ pub enum Operation {
     Eq,
 }
 
+#[derive(Debug)]
 pub enum Expr {
     Int(i64),
     Bool(bool),
@@ -22,8 +25,10 @@ pub enum Expr {
     BinOp(Operation, Box<Self>, Box<Self>),
     IfElse(Box<Self>, Block, Block),
     Neg(Box<Self>),
+    FunctionCall { func: Box<Expr>, args: Vec<Expr> },
 }
 
+#[derive(Debug)]
 pub enum Stmt {
     Expr(Expr),
     Declare(Rc<str>, Expr),
@@ -31,4 +36,17 @@ pub enum Stmt {
     Input(Rc<str>),
     Print(Expr),
     If(Expr, Block),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Variable {
+    pub name: Rc<str>,
+    pub typ: Constraint,
+}
+
+#[derive(Debug)]
+pub struct FunctionDef {
+    pub name: Rc<str>,
+    pub signature: FunctionSignature,
+    pub body: Block,
 }

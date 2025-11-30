@@ -4,8 +4,15 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 
 /// A registry ID. Always valid against the registry it was returned from.
-#[derive(Clone, Copy)]
+#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct Id<T>(usize, PhantomData<T>);
+
+impl<T> Clone for Id<T> {
+    fn clone(&self) -> Self {
+        Id(self.0, PhantomData)
+    }
+}
+impl<T> Copy for Id<T> {}
 
 fn to_id<T>(raw: usize) -> Id<T> {
     Id(raw, PhantomData)

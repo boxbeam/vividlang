@@ -1,13 +1,14 @@
 use std::cell::UnsafeCell;
 
-use crate::Func;
+use crate::{Func, type_system::FunctionSignature};
 
 pub struct Vm {
-    stack: Vec<i64>,
+    pub stack: Vec<i64>,
     return_register: UnsafeCell<[i64; 256]>,
     stack_frames: Vec<usize>,
     stack_base: usize,
     functions: UnsafeCell<Vec<Function>>,
+    pub(crate) entry_point: Option<usize>,
 }
 
 impl Default for Vm {
@@ -18,12 +19,13 @@ impl Default for Vm {
             stack_frames: vec![],
             stack_base: 0,
             functions: Default::default(),
+            entry_point: None,
         }
     }
 }
 
 pub struct Function {
-    pub stack_size: usize,
+    pub signature: FunctionSignature,
     pub(crate) func: Func<'static>,
 }
 
@@ -34,16 +36,26 @@ impl Vm {
         functions.len() - 1
     }
 
+    pub(crate) fn get_function_raw(&mut self, id: usize) -> *const Func<'static> {
+        let functions = self.functions.get() as *const Vec<Function>;
+        let func = unsafe { &((*functions)[id]) };
+        &func.func as *const _
+    }
+
     pub fn call_function(&mut self, id: usize) {
         let functions = self.functions.get() as *const Vec<Function>;
         let func = unsafe { &((*functions)[id]) };
-        let mut stack_frame = self.stack_frame(func.stack_size);
+        let mut stack_frame = self.stack_frame(func.signature.stack_size);
         func.func.invoke(&mut stack_frame);
+    }
+
+    pub fn entry_point(&self) -> Option<usize> {
+        self.entry_point.clone()
     }
 }
 
 pub struct StackGuard<'a> {
-    vm: &'a mut Vm,
+    pub vm: &'a mut Vm,
 }
 
 impl<'a> Drop for StackGuard<'a> {
@@ -69,6 +81,15 @@ impl<'a> StackGuard<'a> {
         stack
     }
 
+    pub fn get_global_raw<T>(&mut self, addr: usize) -> *mut T {
+        self.vm.stack[addr..].as_mut_ptr() as *mut T
+    }
+
+    pub fn get_global<T>(&mut self, addr: usize) -> &mut T {
+        let stack = self.get_global_raw(addr);
+        unsafe { &mut *stack }
+    }
+
     pub fn val_raw<T>(&mut self) -> *mut T {
         self.vm.return_register.get() as *mut T
     }
@@ -79,13 +100,6 @@ impl<'a> StackGuard<'a> {
 
     pub fn set_val<T>(&mut self, val: T) {
         unsafe { *self.val_raw() = val }
-    }
-
-    pub fn fetch_global_raw(&mut self, addr: usize, len: usize) {
-        let val = unsafe { &mut *self.vm.return_register.get() };
-        for (src, dst) in self.vm.stack[addr..addr + len].iter().zip(val) {
-            *dst = *src;
-        }
     }
 }
 
