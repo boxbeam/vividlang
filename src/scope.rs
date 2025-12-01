@@ -1,10 +1,9 @@
 use std::fmt::Debug;
 use std::{collections::HashMap, rc::Rc};
 
-use crate::compile_bytecode::translate_function;
-use crate::ir::FunctionDef;
+use crate::ir::{Block, Expr, FunctionDef, FunctionSignature, Stmt};
 use crate::registry::Id;
-use crate::type_system::{Constraint, FunctionSignature, ResolveError};
+use crate::type_system::ResolveError;
 use crate::{
     registry::{Registry, Shadowing},
     type_system::{Trait, TraitImpl, Type},
@@ -49,35 +48,28 @@ impl Namespace {
 }
 
 #[derive(Clone)]
-pub struct GlobalVariable {
+pub struct GlobalValue {
     key: GlobalKey,
-    typ: Type,
-    addr: usize,
 }
 
-impl GlobalVariable {
+#[derive(Clone)]
+pub enum Location {
+    Global(Id<GlobalValue>),
+    Local(Id<()>),
+}
+
+impl GlobalValue {
     pub fn key(&self) -> &GlobalKey {
         &self.key
-    }
-
-    pub fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    pub fn addr(&self) -> usize {
-        self.addr
     }
 }
 
 #[derive(Default)]
 pub struct GlobalScope {
     namespaces: Registry<Rc<str>, Namespace>,
-    globals: Registry<GlobalKey, GlobalVariable>,
-    functions: Registry<GlobalKey, FunctionSignature>,
-    function_impls: HashMap<Id<FunctionSignature>, Function>,
+    globals: Registry<GlobalKey, GlobalValue>,
     traits: Registry<GlobalKey, Trait>,
     impls: HashMap<Type, HashMap<Trait, TraitImpl>>,
-    globals_size: usize,
 }
 
 impl GlobalScope {
@@ -86,10 +78,6 @@ impl GlobalScope {
         let namespace = Namespace { name: name.clone() };
         self.namespaces.insert(name, namespace.clone())?;
         Some(namespace)
-    }
-
-    pub fn get_function(&self, id: Id<FunctionSignature>) -> Option<FunctionSignature> {
-        self.functions.get(id.raw()).cloned()
     }
 
     pub fn namespace(&mut self, name: Rc<str>) -> Namespace {
@@ -106,67 +94,9 @@ impl GlobalScope {
         self.namespace("".into())
     }
 
-    /// Attempts to register a global variable, returning its address.
-    /// Returns nothing if the global is already registered.
-    pub fn register_global(&mut self, key: GlobalKey, typ: Type) -> Option<usize> {
-        let addr = self.globals_size;
-        let size = typ.size();
-
-        let global = GlobalVariable {
-            key: key.clone(),
-            typ,
-            addr,
-        };
-
-        self.globals.insert(key, global)?;
-        self.globals_size += size;
-        Some(addr)
-    }
-
-    pub fn declare_function(
-        &mut self,
-        key: GlobalKey,
-        func: FunctionSignature,
-    ) -> Option<Id<FunctionSignature>> {
-        if let Some(_) = self.globals.lookup(&key) {
-            return None;
-        }
-        let typ = Type::Function(func.clone().into());
-        let function_id = self.functions.insert(key.clone(), func)?;
-        self.register_global(key, typ)?;
-        Some(function_id)
-    }
-
-    pub fn implement_function(
-        &mut self,
-        key: GlobalKey,
-        func: FunctionDef,
-    ) -> Result<(), ResolveError> {
-        let Some(id) = self.functions.lookup_id(&key) else {
-            return Err(ResolveError::UndefinedIdentifier(key.name()));
-        };
-        let func = self.compile_function(key.namespace(), func)?;
-        self.function_impls.entry(id).or_insert(func);
-        Ok(())
-    }
-
-    pub fn compile(mut self, entry_point: GlobalKey) -> Result<Vm, ResolveError> {
-        let mut vm = Vm::default();
-
-        let main_key = self.root_namespace().key("main");
-        let Some(main_id) = self.functions.lookup_id(&main_key) else {
-            return Err(ResolveError::UndefinedIdentifier(entry_point.name()));
-        };
-        vm.entry_point = Some(main_id.raw());
-
-        let mut funcs: Vec<_> = self.function_impls.into_iter().collect();
-        funcs.sort_by_key(|(id, _)| id.raw());
-
-        for (_, func) in funcs {
-            vm.register_function(func);
-        }
-
-        Ok(vm)
+    pub fn register_global(&mut self, key: GlobalKey) -> Id<GlobalValue> {
+        let global = GlobalValue { key: key.clone() };
+        self.globals.insert(key, global).unwrap()
     }
 
     /// Attempts to register a trait.
@@ -193,40 +123,95 @@ impl GlobalScope {
             .is_some_and(|impls| impls.contains_key(trait_))
     }
 
-    pub fn lookup_global(&self, key: &GlobalKey) -> Option<&GlobalVariable> {
-        self.globals.lookup(&key)
-    }
-
-    pub fn compile_function(
-        &mut self,
-        namespace: Namespace,
-        function: FunctionDef,
-    ) -> Result<Function, ResolveError> {
-        let layout = FunctionBuilder::new(self, namespace);
-
-        let signature = function.signature.clone();
-        let bytecode = translate_function(function, layout)?;
-        let func = crate::compile_stmts(bytecode.stmts);
-
-        Ok(Function { func, signature })
+    pub fn lookup_global(&self, key: &GlobalKey) -> Option<&GlobalValue> {
+        self.globals.lookup(key)
     }
 }
 
-pub struct FunctionBuilder<'a> {
+fn resolve_name(name: Rc<str>, scope: &Scope) -> Result<Location, ResolveError> {
+    if let Some(local) = scope.variables.lookup_id(&name) {
+        Ok(Location::Local(local))
+    } else if let Some(global) = scope
+        .global
+        .globals
+        .lookup_id(&scope.namespace().key(name.clone()))
+    {
+        Ok(Location::Global(global.clone()))
+    } else {
+        Err(ResolveError::UndefinedIdentifier(name))
+    }
+}
+
+fn resolve_block(block: &mut Block, mut scope: Scope) -> Result<(), ResolveError> {
+    for stmt in &mut block.stmts {
+        match stmt {
+            Stmt::Expr(expr) => resolve_expr(expr, &mut scope)?,
+            Stmt::Declare(name, expr) => {
+                let id = scope.declare(name.name());
+                name.loc.replace(Location::Local(id));
+                resolve_expr(expr, &mut scope)?;
+            }
+            Stmt::Assign(name, expr) => {
+                let loc = resolve_name(name.name(), &scope)?;
+                name.loc.replace(loc);
+                resolve_expr(expr, &mut scope)?;
+            }
+            Stmt::Input(name) => {
+                let loc = resolve_name(name.name(), &scope)?;
+                name.loc.replace(loc);
+            }
+            Stmt::Print(expr) => resolve_expr(expr, &mut scope)?,
+
+            Stmt::If(expr, block) => {
+                resolve_expr(expr, &mut scope)?;
+                let scope = scope.scope();
+                resolve_block(block, scope)?;
+            }
+        }
+    }
+    if let Some(expr) = &mut block.eval {
+        resolve_expr(expr, &mut scope)?;
+    }
+    Ok(())
+}
+
+fn resolve_expr(expr: &mut Expr, scope: &mut Scope) -> Result<(), ResolveError> {
+    match expr {
+        Expr::Int(_) => {}
+        Expr::Bool(_) => {}
+        Expr::Var(ident) => {
+            let loc = resolve_name(ident.name(), scope)?;
+            ident.loc.replace(loc);
+        }
+        Expr::BinOp(_, l, r) => {
+            resolve_expr(l, scope)?;
+            resolve_expr(r, scope)?;
+        }
+        Expr::IfElse(expr, if_case, else_case) => {
+            resolve_expr(expr, scope)?;
+            let if_scope = scope.scope();
+            resolve_block(if_case, if_scope)?;
+            let else_scope = scope.scope();
+            resolve_block(else_case, else_scope)?;
+        }
+        Expr::Neg(expr) => resolve_expr(expr, scope)?,
+        Expr::FunctionCall { func, args } => {
+            resolve_expr(func, scope)?;
+            for arg in args.iter_mut() {
+                resolve_expr(arg, scope)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) struct NameResolver<'a> {
     namespace: Namespace,
-    pub global: &'a mut GlobalScope,
-    variables: Registry<Rc<str>, Constraint, Shadowing>,
+    pub(crate) global: &'a mut GlobalScope,
+    variables: Registry<Rc<str>, (), Shadowing>,
 }
 
-pub struct StackLayout {
-    pub types: Vec<(Type, usize)>,
-    pub size: usize,
-}
-
-#[derive(Debug)]
-pub struct MissingTypes(pub Vec<Rc<str>>);
-
-impl<'a> FunctionBuilder<'a> {
+impl<'a> NameResolver<'a> {
     pub fn new(global: &'a mut GlobalScope, namespace: Namespace) -> Self {
         Self {
             namespace,
@@ -235,48 +220,10 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    pub fn signature(&mut self, signature: &FunctionSignature) {
-        for arg in signature.args.iter() {
-            self.variables.insert(arg.name.clone(), arg.typ.clone());
+    pub fn arguments(&mut self, args: impl IntoIterator<Item = Rc<str>>) {
+        for arg in args {
+            self.variables.insert(arg, ());
         }
-        self.variables
-            .insert("".into(), signature.return_type.clone());
-    }
-
-    pub fn compute_signature(
-        &self,
-        signature: &FunctionSignature,
-    ) -> Result<FunctionSignature, ResolveError> {
-        let mut args = vec![];
-        let mut missing_types = vec![];
-        let mut stack_size = 0;
-        for arg in signature.arguments.iter() {
-            let typ = self
-                .variables
-                .lookup(&arg.name)
-                .ok_or_else(|| ResolveError::UndefinedIdentifier(arg.name.clone()))?;
-            let Constraint::Concrete(t) = typ else {
-                missing_types.push(arg.name.clone());
-                continue;
-            };
-            args.push(t.clone());
-            stack_size += t.size();
-        }
-
-        if !missing_types.is_empty() {
-            return Err(ResolveError::MissingTypes(MissingTypes(missing_types)));
-        }
-
-        let ret = self.variables.lookup("");
-        let Some(Constraint::Concrete(ret)) = ret else {
-            return Err(ResolveError::MissingReturnType);
-        };
-
-        Ok(FunctionSignature {
-            stack_size,
-            args: args.into(),
-            ret: ret.clone(),
-        })
     }
 
     pub fn scope(&mut self) -> Scope {
@@ -296,34 +243,19 @@ impl<'a> FunctionBuilder<'a> {
         self.variables = Default::default();
     }
 
-    pub fn compute_layout(&self) -> Result<StackLayout, ResolveError> {
-        let mut missing_types: Vec<Rc<str>> = vec![];
-
-        let mut size = 0;
-        let mut types: Vec<(Type, usize)> = vec![];
-        for i in 0..self.variables.len() {
-            let name = self.variables.key(i);
-            if name.is_empty() {
-                continue;
-            }
-            let constraint = self.variables.get(i).unwrap();
-            let Constraint::Concrete(t) = constraint else {
-                missing_types.push(name.clone());
-                continue;
-            };
-
-            types.push((t.clone(), size));
-            size += t.size();
+    pub fn resolve_function(&mut self, function: &mut FunctionDef) -> Result<(), ResolveError> {
+        let mut scope = self.scope();
+        for arg in function.signature.args.iter() {
+            scope.declare(arg.name.name());
         }
-
-        Ok(StackLayout { types, size })
+        resolve_block(&mut function.body, scope)
     }
 }
 
 pub struct Scope<'a> {
     namespace: Namespace,
     pub global: &'a mut GlobalScope,
-    variables: &'a mut Registry<Rc<str>, Constraint, Shadowing>,
+    variables: &'a mut Registry<Rc<str>, (), Shadowing>,
     locals: Vec<Rc<str>>,
 }
 
@@ -339,51 +271,13 @@ impl<'a> Scope<'a> {
     }
 
     /// Declares a local variable, and returns its address within the scope.
-    pub fn declare(&mut self, name: impl Into<Rc<str>>) -> Id<Constraint> {
+    pub fn declare(&mut self, name: impl Into<Rc<str>>) -> Id<()> {
         let name = name.into();
 
         self.locals.push(name.clone());
-        let var_id = self
-            .variables
-            .insert(name, Constraint::Unknown)
-            .expect("Can always shadow");
+        let var_id = self.variables.insert(name, ()).expect("Can always shadow");
 
         var_id
-    }
-
-    pub fn constrain(
-        &mut self,
-        id: Id<Constraint>,
-        constraint: Constraint,
-    ) -> Result<(), ResolveError> {
-        let current = self
-            .variables
-            .get_mut(id.raw())
-            .expect("ID is always valid");
-
-        *current = constraint;
-        Ok(())
-    }
-
-    pub fn get_constraint(&self, id: Id<Constraint>) -> Option<Constraint> {
-        let orig_id = id;
-        let mut constraint = self.variables.get(id.raw())?;
-        while let Constraint::Ref(id) = constraint {
-            if *id == orig_id {
-                return Some(Constraint::Unknown);
-            }
-            constraint = self.variables.get(id.raw())?;
-        }
-        Some(constraint.clone())
-    }
-
-    pub fn lookup_id(&self, name: &str) -> Option<Id<Constraint>> {
-        self.variables.lookup_id(name)
-    }
-
-    /// Looks up the constraint of a variable.
-    pub fn lookup(&self, name: &str) -> Option<&Constraint> {
-        self.variables.lookup(name)
     }
 
     pub fn namespace(&self) -> &Namespace {

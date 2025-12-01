@@ -1,10 +1,13 @@
-use std::{collections::HashSet, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use crate::{
-    Operation,
-    ir::{Block, Expr, Stmt},
-    registry::Id,
-    scope::{GlobalKey, MissingTypes, Scope},
+    bytecode::StackLayout,
+    ir::{Block, Expr, FunctionDef, Operation, Stmt},
+    registry::{Id, Registry},
+    scope::{GlobalKey, GlobalValue, Location},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -12,7 +15,7 @@ pub enum Type {
     Int,
     Bool,
     Void,
-    Function(Rc<FunctionSignature>),
+    Function(usize),
 }
 
 impl Type {
@@ -37,12 +40,6 @@ pub struct Trait {
     pub(crate) key: GlobalKey,
 }
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
-pub struct FunctionSignature {
-    pub args: Rc<[Type]>,
-    pub ret: Type,
-}
-
 #[derive(Clone)]
 pub struct TraitImpl {
     trait_: Trait,
@@ -61,10 +58,17 @@ impl TraitImpl {
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
+pub struct FunctionConstraint {
+    return_type: Constraint,
+    args: Vec<Constraint>,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
 pub enum Constraint {
     Implements(Rc<[Trait]>),
     Concrete(Type),
     Ref(Id<Constraint>),
+    Function(Rc<FunctionConstraint>),
     #[default]
     Unknown,
 }
@@ -74,40 +78,361 @@ pub enum TypeError {
     Mismatch { expected: Type, found: Type },
     DoesNotImplement(Vec<Trait>),
     CannotInvoke(Constraint),
+    Circular(Id<Constraint>),
+    ArgCount { expected: usize, found: usize },
+    MissingTypes(Vec<Id<Constraint>>),
 }
 
 #[derive(Debug)]
 pub enum ResolveError {
-    TypeError(TypeError),
     UndefinedIdentifier(Rc<str>),
-    MissingTypes(MissingTypes),
     MissingReturnType,
 }
 
-impl From<TypeError> for ResolveError {
-    fn from(value: TypeError) -> Self {
-        ResolveError::TypeError(value)
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub enum TypeKey {
+    Scoped(Id<GlobalValue>, Id<()>),
+    Return(Id<GlobalValue>),
+    Global(Id<GlobalValue>),
+}
+
+#[derive(Default)]
+pub struct TypeSolver {
+    constraints: Registry<TypeKey, Constraint>,
+    traits: Registry<GlobalKey, Trait>,
+    trait_impls: HashMap<Type, HashMap<Trait, TraitImpl>>,
+}
+
+pub struct FunctionLayout {
+    ret: Id<Constraint>,
+    args: Vec<Id<Constraint>>,
+    vars: Vec<Id<Constraint>>,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub struct ConcreteSignature {
+    ret: Type,
+    args: Vec<Type>,
+}
+
+fn build_layout(
+    types: &mut TypeSolver,
+    current_global: Id<GlobalValue>,
+    func: &FunctionDef,
+) -> FunctionLayout {
+    let ret = types.constraint_id(TypeKey::Return(current_global));
+    let args: Vec<_> = func
+        .signature
+        .args
+        .iter()
+        .map(|arg| types.constraint_id(type_key(current_global, arg.name.loc())))
+        .collect();
+    let mut vars = vec![];
+    populate_layout_block(types, &mut vars, current_global, &func.body);
+    FunctionLayout { ret, args, vars }
+}
+
+fn populate_layout_expr(
+    types: &mut TypeSolver,
+    vars: &mut Vec<Id<Constraint>>,
+    key: Id<GlobalValue>,
+    expr: &Expr,
+) {
+    match expr {
+        Expr::Int(_) => {}
+        Expr::Bool(_) => {}
+        Expr::Var(_) => {}
+        Expr::BinOp(_, l, r) => {
+            populate_layout_expr(types, vars, key, l);
+            populate_layout_expr(types, vars, key, r);
+        }
+        Expr::IfElse(expr, if_case, else_case) => {
+            populate_layout_expr(types, vars, key, expr);
+            populate_layout_block(types, vars, key, if_case);
+            populate_layout_block(types, vars, key, else_case);
+        }
+        Expr::Neg(expr) => populate_layout_expr(types, vars, key, expr),
+        Expr::FunctionCall { func, args } => {
+            populate_layout_expr(types, vars, key, func);
+            for arg in args {
+                populate_layout_expr(types, vars, key, arg);
+            }
+        }
     }
 }
 
-impl From<MissingTypes> for ResolveError {
-    fn from(value: MissingTypes) -> Self {
-        ResolveError::MissingTypes(value)
+fn populate_layout_block(
+    types: &mut TypeSolver,
+    vars: &mut Vec<Id<Constraint>>,
+    key: Id<GlobalValue>,
+    block: &Block,
+) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Expr(expr) => populate_layout_expr(types, vars, key, expr),
+            Stmt::Declare(ident, expr) => {
+                vars.push(types.constraint_id(type_key(key, ident.loc())));
+                populate_layout_expr(types, vars, key, expr);
+            }
+            Stmt::Assign(_, expr) => {
+                populate_layout_expr(types, vars, key, expr);
+            }
+            Stmt::Input(_) => {}
+            Stmt::Print(expr) => populate_layout_expr(types, vars, key, expr),
+            Stmt::If(expr, block) => {
+                populate_layout_expr(types, vars, key, expr);
+                populate_layout_block(types, vars, key, block);
+            }
+        }
+    }
+    if let Some(expr) = &block.eval {
+        populate_layout_expr(types, vars, key, expr);
     }
 }
 
-impl Constraint {
-    pub fn check(&self, typ: &Type, scope: &mut Scope) -> Result<(), TypeError> {
-        self.merge(&Constraint::Concrete(typ.clone()), scope)?;
+pub fn type_key(current_global: Id<GlobalValue>, loc: Location) -> TypeKey {
+    match loc {
+        Location::Global(id) => TypeKey::Global(id),
+        Location::Local(id) => TypeKey::Scoped(current_global, id),
+    }
+}
+
+impl TypeSolver {
+    pub fn constraint_id(&mut self, key: TypeKey) -> Id<Constraint> {
+        self.constraints
+            .lookup_id(&key)
+            .or_else(|| self.constraints.insert(key, Constraint::Unknown))
+            .unwrap()
+    }
+
+    pub fn declare_trait(&mut self, key: GlobalKey) -> Option<Trait> {
+        let trait_ = Trait { key: key.clone() };
+        let clone = trait_.clone();
+        self.traits.insert(key, trait_)?;
+        Some(clone)
+    }
+
+    pub fn compute_abstract_layout(
+        &mut self,
+        global_id: Id<GlobalValue>,
+        func: &FunctionDef,
+    ) -> FunctionLayout {
+        build_layout(self, global_id, func)
+    }
+
+    pub fn compute_stack_layout(
+        &mut self,
+        abstract_layout: &FunctionLayout,
+    ) -> Result<StackLayout, TypeError> {
+        let mut size = 0;
+        let mut missing = vec![];
+        let mut types = vec![];
+
+        for arg in abstract_layout
+            .args
+            .iter()
+            .chain(&abstract_layout.vars)
+            .copied()
+        {
+            let Some(Constraint::Concrete(c)) = self.get_constraint(arg) else {
+                missing.push(arg);
+                continue;
+            };
+            types.push((c.clone(), size));
+            size += c.size();
+        }
+
+        if !missing.is_empty() {
+            return Err(TypeError::MissingTypes(missing));
+        }
+
+        Ok(StackLayout {
+            locals: types,
+            size,
+        })
+    }
+
+    pub fn compute_concrete_signature(
+        &mut self,
+        abstract_layout: &FunctionLayout,
+    ) -> Result<ConcreteSignature, TypeError> {
+        let mut missing = vec![];
+        let mut args = vec![];
+
+        for arg in &abstract_layout.args {
+            let Some(Constraint::Concrete(c)) = self.get_constraint(*arg) else {
+                missing.push(*arg);
+                continue;
+            };
+            args.push(c.clone());
+        }
+
+        let Some(Constraint::Concrete(ret)) = self.get_constraint(abstract_layout.ret) else {
+            missing.push(abstract_layout.ret);
+            return Err(TypeError::MissingTypes(missing));
+        };
+
+        if !missing.is_empty() {
+            return Err(TypeError::MissingTypes(missing));
+        }
+
+        Ok(ConcreteSignature {
+            ret: ret.clone().into(),
+            args: args.into(),
+        })
+    }
+
+    pub fn get_trait_impl(&self, typ: &Type, trait_: &Trait) -> Option<&TraitImpl> {
+        self.trait_impls.get(&typ).and_then(|m| m.get(&trait_))
+    }
+
+    pub fn get_constraint(&mut self, mut id: Id<Constraint>) -> Option<&mut Constraint> {
+        let first_id = id;
+        let mut constraint = self.constraints.get(id)?;
+        while let Constraint::Ref(ref_id) = constraint {
+            if id == first_id {
+                return None;
+            }
+            id = *ref_id;
+            constraint = self.constraints.get(id)?;
+        }
+        self.constraints.get_mut(id)
+    }
+
+    pub fn compute_expr_constraint(
+        &mut self,
+        current_global: Id<GlobalValue>,
+        expr: &Expr,
+    ) -> Result<Constraint, TypeError> {
+        Ok(match expr {
+            Expr::Int(_) => Constraint::Concrete(Type::Int),
+            Expr::Bool(_) => Constraint::Concrete(Type::Bool),
+            Expr::Var(ident) => {
+                let id = self.constraint_id(type_key(current_global, ident.loc()));
+                Constraint::Ref(id)
+            }
+            Expr::BinOp(op, l, r) => {
+                let l = self.compute_expr_constraint(current_global, l)?;
+                let r = self.compute_expr_constraint(current_global, r)?;
+                self.op_constraint(op, &l, &r)?
+            }
+            Expr::IfElse(expr, if_case, else_case) => {
+                let expr = self.compute_expr_constraint(current_global, expr)?;
+                self.merge(&expr, &Constraint::Concrete(Type::Bool))?;
+                self.compute_block_constraint(current_global, if_case)?;
+                self.compute_block_constraint(current_global, else_case)?;
+                Constraint::Concrete(Type::Void)
+            }
+            Expr::Neg(expr) => self.compute_expr_constraint(current_global, expr)?,
+            Expr::FunctionCall { func, args } => {
+                let mut arg_constraints = vec![];
+                for arg in args {
+                    arg_constraints.push(self.compute_expr_constraint(current_global, arg)?);
+                }
+                let computed_fn = Constraint::Function(
+                    FunctionConstraint {
+                        return_type: Constraint::Unknown,
+                        args: arg_constraints,
+                    }
+                    .into(),
+                );
+
+                let expr = self.compute_expr_constraint(current_global, func)?;
+
+                let merged = self.merge(&expr, &computed_fn)?;
+                let Constraint::Function(resolved_constraint) = merged else {
+                    return Err(TypeError::CannotInvoke(merged));
+                };
+                resolved_constraint.return_type.clone()
+            }
+        })
+    }
+
+    pub fn compute_block_constraint(
+        &mut self,
+        current_global: Id<GlobalValue>,
+        block: &Block,
+    ) -> Result<Constraint, TypeError> {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Expr(expr) => {
+                    self.compute_expr_constraint(current_global, expr)?;
+                }
+                Stmt::Declare(ident, expr) => {
+                    let id = self.constraint_id(type_key(current_global, ident.loc()));
+                    let expr = self.compute_expr_constraint(current_global, expr)?;
+                    self.merge(&Constraint::Ref(id), &expr)?;
+                }
+                Stmt::Assign(ident, expr) => {
+                    let id = self.constraint_id(type_key(current_global, ident.loc()));
+                    let expr = self.compute_expr_constraint(current_global, expr)?;
+                    self.merge(&Constraint::Ref(id), &expr)?;
+                }
+                Stmt::Input(ident) => {
+                    let id = self.constraint_id(type_key(current_global, ident.loc()));
+                    self.merge(&Constraint::Ref(id), &Constraint::Concrete(Type::Int))?;
+                }
+                Stmt::Print(expr) => {
+                    let expr = self.compute_expr_constraint(current_global, expr)?;
+                    self.merge(&expr, &Constraint::Concrete(Type::Int))?;
+                }
+                Stmt::If(expr, stmts) => {
+                    let expr = self.compute_expr_constraint(current_global, expr)?;
+                    self.merge(&expr, &Constraint::Concrete(Type::Bool))?;
+                    self.compute_block_constraint(current_global, stmts)?;
+                }
+            }
+        }
+        if let Some(expr) = &block.eval {
+            self.compute_expr_constraint(current_global, expr)
+        } else {
+            Ok(Constraint::Concrete(Type::Void))
+        }
+    }
+
+    pub fn resolve_function(
+        &mut self,
+        current_global: Id<GlobalValue>,
+        func: &FunctionDef,
+    ) -> Result<(), TypeError> {
+        let constraint = self.compute_block_constraint(current_global, &func.body)?;
+        self.merge(&constraint, &func.signature.ret)?;
         Ok(())
     }
 
-    pub fn merge(&self, other: &Constraint, scope: &mut Scope) -> Result<Constraint, TypeError> {
-        use Constraint::*;
-        match (self, other) {
-            (Concrete(a), Concrete(b)) => {
+    pub fn op_constraint(
+        &mut self,
+        op: &Operation,
+        l: &Constraint,
+        r: &Constraint,
+    ) -> Result<Constraint, TypeError> {
+        Ok(match (op, l, r) {
+            (Operation::Add | Operation::Sub | Operation::Mul | Operation::Div, l, r) => {
+                self.merge(l, r)?;
+                self.merge(r, l)?
+            }
+            (
+                Operation::Gt | Operation::Lt | Operation::Gte | Operation::Lte | Operation::Eq,
+                l,
+                r,
+            ) => {
+                self.merge(l, r)?;
+                self.merge(r, l)?;
+                Constraint::Concrete(Type::Bool)
+            }
+        })
+    }
+
+    pub fn merge(&mut self, a: &Constraint, b: &Constraint) -> Result<Constraint, TypeError> {
+        match (a, b) {
+            (Constraint::Function(_), Constraint::Concrete(Type::Function(addr)))
+            | (Constraint::Concrete(Type::Function(addr)), Constraint::Function(_)) => {
+                Ok(Constraint::Concrete(Type::Function(*addr)))
+            }
+            (Constraint::Unknown, c) | (c, Constraint::Unknown) => Ok(c.clone()),
+            (Constraint::Concrete(a), Constraint::Concrete(b)) => {
                 if a == b {
-                    Ok(self.clone())
+                    Ok(Constraint::Concrete(a.clone()))
                 } else {
                     Err(TypeError::Mismatch {
                         expected: a.clone(),
@@ -115,130 +440,67 @@ impl Constraint {
                     })
                 }
             }
-            (Implements(traits), Concrete(c)) | (Concrete(c), Implements(traits)) => {
-                let not_implemented: Vec<Trait> = traits
+            (Constraint::Implements(traits), Constraint::Concrete(c))
+            | (Constraint::Concrete(c), Constraint::Implements(traits)) => {
+                let not_implemented: Vec<_> = traits
                     .iter()
-                    .filter(|t| !scope.global.is_implemented(c, t))
+                    .filter(|t| self.get_trait_impl(c, t).is_none())
                     .cloned()
                     .collect();
                 if not_implemented.is_empty() {
-                    Ok(Concrete(c.clone()))
+                    Ok(Constraint::Concrete(c.clone()))
                 } else {
                     Err(TypeError::DoesNotImplement(not_implemented))
                 }
             }
-            (Implements(a), Implements(b)) => {
-                let mut set = HashSet::new();
-                set.extend(a.iter());
-                set.extend(b.iter());
-                Ok(Implements(set.into_iter().cloned().collect()))
-            }
-            (Unknown, c) | (c, Unknown) => Ok(c.clone()),
-            (Ref(a_id), Ref(b_id)) => {
-                if a_id == b_id {
-                    return Ok(scope.get_constraint(*a_id).unwrap().clone());
+            (Constraint::Ref(a), Constraint::Ref(b)) => {
+                if a == b {
+                    return Ok(Constraint::Ref(*a));
                 }
-                let a = scope.get_constraint(*a_id).unwrap();
-                let b = scope.get_constraint(*b_id).unwrap();
-                let combined = a.merge(&b, scope)?;
-                scope.constrain(*a_id, combined.clone());
-                scope.constrain(*b_id, combined.clone());
-                Ok(combined)
+                let a_constraint = self.get_constraint(*a).unwrap().clone();
+                let b_constraint = self.get_constraint(*b).unwrap().clone();
+                let merged = self.merge(&a_constraint, &b_constraint)?;
+                *self.get_constraint(*a).unwrap() = merged;
+                *self.get_constraint(*b).unwrap() = Constraint::Ref(*a);
+                Ok(Constraint::Ref(*a))
             }
-            (Ref(id), other) | (other, Ref(id)) => {
-                let stored = scope.get_constraint(*id).unwrap();
-                let combined = stored.merge(&other, scope)?;
-                scope.constrain(*id, combined.clone());
-                Ok(combined)
+            (Constraint::Ref(ref_id), c) => {
+                let referenced = self.get_constraint(*ref_id).unwrap().clone();
+                let merged = self.merge(&referenced, c)?;
+                let referenced = self.get_constraint(*ref_id).unwrap();
+                *referenced = merged.clone();
+                Ok(merged)
+            }
+            (c, Constraint::Ref(ref_id)) => {
+                let referenced = self.get_constraint(*ref_id).unwrap().clone();
+                let merged = self.merge(&referenced, c)?;
+                Ok(merged)
+            }
+            (Constraint::Implements(a), Constraint::Implements(b)) => {
+                let all: HashSet<_> = a.iter().chain(b.iter()).cloned().collect();
+                Ok(Constraint::Implements(all.into_iter().collect()))
+            }
+            (Constraint::Function(a), Constraint::Function(b)) => {
+                let return_type = self.merge(&a.return_type, &b.return_type)?;
+                if a.args.len() != b.args.len() {
+                    return Err(TypeError::ArgCount {
+                        expected: b.args.len(),
+                        found: a.args.len(),
+                    });
+                }
+                let mut args = vec![];
+
+                for (arg_a, arg_b) in a.args.iter().zip(b.args.iter()) {
+                    args.push(self.merge(arg_a, arg_b)?);
+                }
+
+                Ok(Constraint::Function(
+                    FunctionConstraint { return_type, args }.into(),
+                ))
+            }
+            (Constraint::Function(_), c) | (c, Constraint::Function(_)) => {
+                Err(TypeError::CannotInvoke(c.clone()))
             }
         }
     }
-}
-
-pub fn constrain_expr(expr: &Expr, scope: &mut Scope) -> Result<Constraint, ResolveError> {
-    Ok(match expr {
-        Expr::Int(_) => Constraint::Concrete(Type::Int),
-        Expr::Bool(_) => Constraint::Concrete(Type::Bool),
-        Expr::Var(name) => {
-            let id = scope
-                .lookup_id(name)
-                .ok_or_else(|| ResolveError::UndefinedIdentifier(name.clone()))?;
-            Constraint::Ref(id)
-        }
-        Expr::BinOp(op, l, r) => constrain_operation(op.clone(), l, r, scope)?,
-        Expr::Neg(expr) => constrain_expr(expr, scope)?,
-        Expr::IfElse(_, if_case, _) => {
-            let last = if_case.last();
-            let Some(Stmt::Expr(inner)) = last else {
-                return Ok(Constraint::Unknown);
-            };
-            constrain_expr(inner, scope)?
-        }
-        Expr::FunctionCall { func, args } => {
-            let constraint = constrain_expr(&*func, scope)?;
-            let Constraint::Concrete(Type::Function(signature)) = constraint else {
-                return Err(ResolveError::TypeError(TypeError::CannotInvoke(constraint)));
-            };
-            for (func_arg, arg) in signature.arguments.iter().zip(args) {
-                let func_arg_type = &func_arg.typ;
-                let arg_type = constrain_expr(arg, scope)?;
-                func_arg_type.merge(&arg_type, scope)?;
-            }
-            signature.return_type.clone()
-        }
-    })
-}
-
-pub fn constrain_operation(
-    operation: Operation,
-    l: &Expr,
-    r: &Expr,
-    scope: &mut Scope,
-) -> Result<Constraint, ResolveError> {
-    use Operation as O;
-    match operation {
-        O::Add | O::Sub | O::Div | O::Mul => {
-            Ok(constrain_expr(l, scope)?.merge(&constrain_expr(r, scope)?, scope)?)
-        }
-        O::Gt | O::Lt | O::Gte | O::Lte | O::Eq => {
-            constrain_expr(l, scope)?.merge(&constrain_expr(r, scope)?, scope)?;
-            Ok(Constraint::Concrete(Type::Bool))
-        }
-    }
-}
-
-pub fn resolve_id(name: &Rc<str>, scope: &Scope) -> Result<Id<Constraint>, ResolveError> {
-    scope
-        .lookup_id(name)
-        .ok_or_else(|| ResolveError::UndefinedIdentifier(name.clone()))
-}
-
-pub fn resolve_stack_layout(block: &Block, mut scope: Scope) -> Result<(), ResolveError> {
-    for stmt in block {
-        match stmt {
-            Stmt::Expr(expr) | Stmt::Print(expr) => {
-                constrain_expr(expr, &mut scope)?;
-            }
-            Stmt::Declare(var, expr) => {
-                let id = scope.declare(var.clone());
-                let typ = constrain_expr(expr, &mut scope)?;
-                scope.constrain(id, typ)?;
-            }
-            Stmt::Assign(var, expr) => {
-                let id = resolve_id(var, &scope)?;
-                let typ = constrain_expr(expr, &mut scope)?;
-                scope.constrain(id, typ)?;
-            }
-            Stmt::Input(var) => {
-                let id = resolve_id(var, &scope)?;
-                scope.constrain(id, Constraint::Concrete(Type::Int))?
-            }
-            Stmt::If(expr, stmts) => {
-                constrain_expr(expr, &mut scope)?;
-                resolve_stack_layout(stmts, scope.scope())?;
-            }
-        }
-    }
-
-    Ok(())
 }

@@ -4,7 +4,6 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 
 /// A registry ID. Always valid against the registry it was returned from.
-#[derive(Debug, Hash, PartialEq, Eq)]
 pub struct Id<T>(usize, PhantomData<T>);
 
 impl<T> Clone for Id<T> {
@@ -14,13 +13,33 @@ impl<T> Clone for Id<T> {
 }
 impl<T> Copy for Id<T> {}
 
-fn to_id<T>(raw: usize) -> Id<T> {
+pub fn to_id<T>(raw: usize) -> Id<T> {
     Id(raw, PhantomData)
 }
 
 impl<T> Id<T> {
     pub fn raw(&self) -> usize {
         self.0
+    }
+}
+
+impl<T> Hash for Id<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T> Eq for Id<T> {}
+
+impl<T> std::fmt::Debug for Id<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Id({})", self.0)
     }
 }
 
@@ -69,16 +88,16 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
         Some(to_id(id))
     }
 
-    pub fn get(&self, id: usize) -> Option<&V> {
-        self.entries.get(id)
+    pub fn get(&self, id: Id<V>) -> Option<&V> {
+        self.entries.get(id.raw())
     }
 
-    pub fn get_mut(&mut self, id: usize) -> Option<&mut V> {
-        self.entries.get_mut(id)
+    pub fn get_mut(&mut self, id: Id<V>) -> Option<&mut V> {
+        self.entries.get_mut(id.raw())
     }
 
-    pub fn key(&self, id: usize) -> &K {
-        &self.reverse_lookup[id]
+    pub fn key(&self, id: Id<V>) -> &K {
+        &self.reverse_lookup[id.raw()]
     }
 
     pub fn lookup_id<Q: ?Sized>(&self, key: &Q) -> Option<Id<V>>
@@ -95,7 +114,15 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        self.get(self.lookup_id(key)?.raw())
+        self.get(self.lookup_id(key)?)
+    }
+
+    pub fn lookup_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        self.get_mut(self.lookup_id(key)?)
     }
 
     /// Unbinds a name from the registry, but does not remove the entry

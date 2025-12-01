@@ -1,13 +1,13 @@
 use std::cell::UnsafeCell;
 
-use crate::{Func, type_system::FunctionSignature};
+use crate::{bytecode::StackLayout, compile::Func};
 
 pub struct Vm {
     pub stack: Vec<i64>,
     return_register: UnsafeCell<[i64; 256]>,
     stack_frames: Vec<usize>,
     stack_base: usize,
-    functions: UnsafeCell<Vec<Function>>,
+    functions: UnsafeCell<Vec<CompiledFunction>>,
     pub(crate) entry_point: Option<usize>,
 }
 
@@ -24,33 +24,32 @@ impl Default for Vm {
     }
 }
 
-pub struct Function {
-    pub signature: FunctionSignature,
+pub struct CompiledFunction {
+    pub layout: StackLayout,
     pub(crate) func: Func<'static>,
 }
 
 impl Vm {
-    pub fn register_function(&mut self, func: Function) -> usize {
+    pub fn register_function(&mut self, func: CompiledFunction) -> usize {
         let functions = self.functions.get_mut();
         functions.push(func);
         functions.len() - 1
     }
 
-    pub(crate) fn get_function_raw(&mut self, id: usize) -> *const Func<'static> {
-        let functions = self.functions.get() as *const Vec<Function>;
-        let func = unsafe { &((*functions)[id]) };
-        &func.func as *const _
+    pub(crate) fn call_function(&mut self, id: usize) {
+        let functions = self.functions.get() as *const Vec<CompiledFunction>;
+        unsafe {
+            let functions = &*functions;
+            let func = &functions[id];
+            let mut stack_frame = self.stack_frame(func.layout.size);
+            func.func.invoke(&mut stack_frame);
+        }
     }
 
-    pub fn call_function(&mut self, id: usize) {
-        let functions = self.functions.get() as *const Vec<Function>;
-        let func = unsafe { &((*functions)[id]) };
-        let mut stack_frame = self.stack_frame(func.signature.stack_size);
-        func.func.invoke(&mut stack_frame);
-    }
-
-    pub fn entry_point(&self) -> Option<usize> {
-        self.entry_point.clone()
+    pub fn run(&mut self) {
+        if let Some(entry_point) = self.entry_point {
+            self.call_function(entry_point);
+        }
     }
 }
 
