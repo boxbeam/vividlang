@@ -43,6 +43,18 @@ impl<T> std::fmt::Debug for Id<T> {
     }
 }
 
+impl<T> PartialOrd for Id<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl<T> Ord for Id<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
 /// Append-only registry which allows different strategies for handling name collisions.
 /// Entries may be unbound from their names, but never removed from the underlying memory,
 /// ensuring IDs returned from the registry are always valid against it.

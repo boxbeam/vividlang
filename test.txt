@@ -1,3 +1,16 @@
+fn a(b) {
+	b + 1
+}
+
+fn recur(n) {
+	print n
+	if n > 5 {
+		recur(n / 2)
+	} else {
+		n
+	}
+}
+
 fn main() {
-	print 1
+	print recur(8)
 }

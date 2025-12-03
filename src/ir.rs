@@ -1,9 +1,6 @@
 use std::rc::Rc;
 
-use crate::{
-    scope::Location,
-    type_system::{Constraint, Type},
-};
+use crate::{scope::Location, type_system::Constraint};
 
 #[derive(Debug)]
 pub struct Block {
@@ -58,13 +55,13 @@ pub struct FunctionDef {
     pub body: Block,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct FunctionSignature {
-    pub args: Rc<[Variable]>,
+    pub args: Vec<Variable>,
     pub ret: Constraint,
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct Ident {
     name: Rc<str>,
     pub(crate) loc: Option<Location>,
@@ -76,12 +73,6 @@ impl PartialEq for Ident {
     }
 }
 impl Eq for Ident {}
-
-impl std::fmt::Debug for Ident {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
 
 impl<S> From<S> for Ident
 where

@@ -1,13 +1,11 @@
-use std::{collections::HashMap, marker::PhantomData};
-
-use ir::Operation;
-use vm::StackGuard;
+use std::collections::BTreeMap;
 
 mod bytecode;
 mod compile;
 pub mod ir;
 mod registry;
 pub mod scope;
+pub mod stack;
 pub mod type_system;
 pub mod vm;
 
@@ -39,11 +37,11 @@ impl From<ResolveError> for CompileError {
     }
 }
 
-pub fn compile_program(mut functions: Vec<FunctionDef>) -> Result<Vm, CompileError> {
+pub fn compile_program(functions: Vec<FunctionDef>) -> Result<Vm, CompileError> {
     let mut global = GlobalScope::default();
     let namespace = global.root_namespace();
 
-    let mut function_map = HashMap::new();
+    let mut function_map = BTreeMap::new();
 
     for func in functions {
         let key = namespace.key(func.name.name());
@@ -51,13 +49,13 @@ pub fn compile_program(mut functions: Vec<FunctionDef>) -> Result<Vm, CompileErr
         function_map.insert(id, func);
     }
 
-    let mut name_resolver = NameResolver::new(&mut global, namespace);
     for (_, func) in &mut function_map {
+        let mut name_resolver = NameResolver::new(&mut global, namespace.clone());
         name_resolver.resolve_function(func)?;
     }
 
     let mut type_solver = TypeSolver::default();
-    let mut layouts = HashMap::new();
+    let mut layouts = BTreeMap::new();
     for (id, func) in &function_map {
         type_solver.resolve_function(*id, func)?;
         let layout = type_solver.compute_abstract_layout(*id, func);
@@ -65,7 +63,7 @@ pub fn compile_program(mut functions: Vec<FunctionDef>) -> Result<Vm, CompileErr
     }
 
     let mut bytecode = BytecodeEmitter::new(&mut type_solver);
-    let mut stack_layouts = HashMap::new();
+    let mut stack_layouts = BTreeMap::new();
     for (id, layout) in &layouts {
         bytecode.declare_function(*id, layout)?;
         stack_layouts.insert(*id, bytecode.types.compute_stack_layout(layout)?);

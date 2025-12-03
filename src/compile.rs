@@ -58,6 +58,7 @@ impl Operation {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum Expr {
     Int(i64),
     Bool(bool),
@@ -68,16 +69,19 @@ pub(crate) enum Expr {
     FunctionCall {
         id: usize,
         stack_size: usize,
+        args_size: usize,
         args: Vec<(Expr, usize)>,
     },
     IfElse(Box<Expr>, Vec<Stmt>, Vec<Stmt>),
 }
 
+#[derive(Debug)]
 pub(crate) enum Dest {
     Global(usize),
     Local(usize),
 }
 
+#[derive(Debug)]
 pub(crate) enum Stmt {
     Expr(Expr),
     Assign64(Dest, Expr),
@@ -96,6 +100,12 @@ pub(crate) struct Func<'a> {
     data: *const (),
     drop: fn(*const ()),
     phantom: PhantomData<&'a ()>,
+}
+
+impl std::fmt::Debug for Func<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Func")
+    }
 }
 
 fn make_func<'a, F>(f: F) -> Func<'a>
@@ -173,10 +183,10 @@ impl Expr {
                     }
                 }),
                 Dest::Local(l) => make_func(move |stack| {
-                    let ptr = stack.get_raw::<i64>(l);
-                    let val = stack.val_raw::<i64>();
+                    let src = stack.get_raw::<i64>(l);
+                    let dst = stack.val_raw::<i64>();
                     unsafe {
-                        std::ptr::copy(ptr, val, size);
+                        std::ptr::copy(src, dst, size);
                     }
                 }),
             },
@@ -204,13 +214,18 @@ impl Expr {
             Expr::FunctionCall {
                 id,
                 stack_size,
+                args_size,
                 args,
             } => {
                 let push_args = push_args(args);
                 make_func(move |stack| {
-                    let mut inner = stack.stack_frame(stack_size);
-                    push_args.invoke(&mut inner);
-                    inner.vm.call_function(id);
+                    push_args.invoke(stack);
+                    let mut inner = stack.stack_frame(stack_size, args_size);
+                    let func = inner.vm.get_function(id);
+                    unsafe {
+                        (*func).func.invoke(&mut inner);
+                    }
+                    inner.vm.stack.release(stack_size);
                 })
             }
         };
@@ -253,8 +268,9 @@ fn push_arg(arg: Expr, addr: usize, size: usize) -> impl Fn(&mut State) {
     move |stack| {
         arg.invoke(stack);
         let src: *mut i64 = stack.val_raw();
-        let dst: *mut i64 = stack.get_raw(addr);
+        let dst: *mut i64 = stack.vm.stack.inner[dbg!(stack.vm.stack.len)..].as_mut_ptr();
         unsafe { std::ptr::copy(src, dst, size) };
+        println!("Put arg {} to addr {}", stack.get::<i64>(addr), addr);
     }
 }
 

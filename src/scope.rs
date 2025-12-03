@@ -1,15 +1,13 @@
 use std::fmt::Debug;
 use std::{collections::HashMap, rc::Rc};
 
-use crate::ir::{Block, Expr, FunctionDef, FunctionSignature, Stmt};
+use crate::ir::{Block, Expr, FunctionDef, Stmt};
 use crate::registry::Id;
 use crate::type_system::ResolveError;
 use crate::{
     registry::{Registry, Shadowing},
     type_system::{Trait, TraitImpl, Type},
 };
-
-use super::vm::*;
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Namespace {
@@ -52,7 +50,7 @@ pub struct GlobalValue {
     key: GlobalKey,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Location {
     Global(Id<GlobalValue>),
     Local(Id<()>),
@@ -245,8 +243,9 @@ impl<'a> NameResolver<'a> {
 
     pub fn resolve_function(&mut self, function: &mut FunctionDef) -> Result<(), ResolveError> {
         let mut scope = self.scope();
-        for arg in function.signature.args.iter() {
-            scope.declare(arg.name.name());
+        for arg in function.signature.args.iter_mut() {
+            let id = scope.declare(arg.name.name());
+            arg.name.loc.replace(Location::Local(id));
         }
         resolve_block(&mut function.body, scope)
     }

@@ -1,7 +1,6 @@
 use interpreter_backend::{
     compile_program,
     ir::*,
-    scope::GlobalScope,
     type_system::{Constraint, Type},
 };
 use untwine::parser;
@@ -25,7 +24,14 @@ parser! {
     nested_expr = "(" sep? expr sep? ")" -> Expr;
     negated_term: '-' sep? expr=term -> Expr { Expr::Neg(expr.into()) }
 
-    term = (negated_term | nested_expr | int | #[convert(Expr::Var)] ident) -> Expr;
+    term: term=(negated_term | nested_expr | int | #[convert(Expr::Var)] ident) sep? invokes=tuple$(sep?)* -> Expr {
+        let mut term = term;
+        let mut invokes = invokes;
+        while let Some(invoke) = invokes.pop() {
+            term = Expr::FunctionCall { func: term.into(), args: invoke }
+        }
+        term
+    }
 
     cmp_op = match {
         ">=" => Operation::Gte,
@@ -37,11 +43,15 @@ parser! {
 
     block: "{" lbsep? stmts=stmt$lbsep* trailing=<lbsep?> "}" -> Block {
         let mut stmts = stmts;
-        if !trailing.contains(";") && let Some(Stmt::Expr(last)) = stmts.pop() {
-            Block {
-                stmts,
-                eval: Some(last.into()),
-            }
+        if !trailing.contains(";") {
+            let last = stmts.pop();
+            let eval = if let Some(Stmt::Expr(last)) = last {
+                Some(last.into())
+            } else {
+                stmts.extend(last);
+                None
+            };
+            Block { stmts, eval }
         } else {
             Block { stmts, eval: None }
         }
@@ -70,6 +80,8 @@ parser! {
             Expr::BinOp(op, l.into(), r.into())
         })
     }
+
+    tuple = "(" sep? expr$comma* sep? ")" -> Vec<Expr>;
 
     expr = (if_else_expr | #[not] "if" cmp) -> Expr;
 

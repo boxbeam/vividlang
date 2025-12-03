@@ -1,8 +1,8 @@
 use crate::{
     compile::{self, Dest},
-    ir::{Block, Expr, FunctionDef, FunctionSignature, Stmt},
+    ir::{Block, Expr, FunctionDef, Stmt},
     registry::{Id, Registry, to_id},
-    scope::{GlobalScope, GlobalValue, Location},
+    scope::{GlobalValue, Location},
     type_system::{Constraint, FunctionLayout, Type, TypeError, TypeKey, TypeSolver, type_key},
 };
 
@@ -45,10 +45,10 @@ impl<'a> BytecodeEmitter<'a> {
         func: FunctionDef,
     ) -> Result<BytecodeFunction, TypeError> {
         let func_layout = self.types.compute_abstract_layout(id, &func);
-        let concrete_signature = self.types.compute_concrete_signature(&func_layout)?;
-        let stack_layout = self.types.compute_stack_layout(&func_layout)?;
+        let layout = self.types.compute_stack_layout(&func_layout)?;
 
-        todo!()
+        let stmts = self.translate_block(&layout, id, func.body)?;
+        Ok(BytecodeFunction { stmts, layout })
     }
 
     fn translate_block(
@@ -134,6 +134,8 @@ impl<'a> BytecodeEmitter<'a> {
             }
             Expr::FunctionCall { func, args } => {
                 let typ = self.types.compute_expr_constraint(id, &func)?;
+                let typ = self.types.resolve_constraint_ref(typ);
+
                 let Constraint::Concrete(Type::Function(func_addr)) = typ else {
                     return Err(TypeError::CannotInvoke(typ));
                 };
@@ -152,15 +154,18 @@ impl<'a> BytecodeEmitter<'a> {
                 let stack_size = stack_layout.size;
 
                 let mut new_args = vec![];
+                let mut args_size = 0;
                 for (arg, size) in args.into_iter().zip(arg_sizes) {
                     let new_arg = self.translate_expr(layout, id, arg)?;
                     new_args.push((new_arg, size));
+                    args_size += size;
                 }
 
                 compile::Expr::FunctionCall {
                     id: func_addr,
                     stack_size,
                     args: new_args,
+                    args_size,
                 }
             }
         })

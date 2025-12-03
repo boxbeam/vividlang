@@ -31,7 +31,7 @@ impl Type {
 
     /// Returns the size, measured in units of 64 bits
     pub fn size(&self) -> usize {
-        ((self.byte_size() + 3) / 4) * 4
+        (self.byte_size() + 7) / 8
     }
 }
 
@@ -299,6 +299,13 @@ impl TypeSolver {
         self.constraints.get_mut(id)
     }
 
+    pub fn resolve_constraint_ref(&mut self, mut constraint: Constraint) -> Constraint {
+        while let Constraint::Ref(ref_id) = constraint {
+            constraint = self.constraints.get(ref_id).unwrap().clone();
+        }
+        constraint.clone()
+    }
+
     pub fn compute_expr_constraint(
         &mut self,
         current_global: Id<GlobalValue>,
@@ -396,7 +403,17 @@ impl TypeSolver {
         func: &FunctionDef,
     ) -> Result<(), TypeError> {
         let constraint = self.compute_block_constraint(current_global, &func.body)?;
-        self.merge(&constraint, &func.signature.ret)?;
+        let key = TypeKey::Return(current_global);
+        let id = self.constraint_id(key);
+        let ret = self.merge(&constraint, &func.signature.ret)?;
+        self.merge(&Constraint::Ref(id), &ret)?;
+
+        for arg in func.signature.args.iter() {
+            let loc = arg.name.loc();
+            let key = type_key(current_global, loc);
+            let id = self.constraint_id(key);
+            self.merge(&Constraint::Ref(id), &arg.typ)?;
+        }
         Ok(())
     }
 
