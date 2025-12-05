@@ -113,7 +113,7 @@ parser! {
 }
 
 fn main() {
-    let src = include_str!("../test.txt");
+    let src = include_str!("../test.viv");
     let parsed = untwine::parse_pretty(program, src, Default::default());
     match parsed {
         Ok(funcs) => {
