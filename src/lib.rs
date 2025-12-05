@@ -5,7 +5,6 @@ mod compile;
 pub mod ir;
 mod registry;
 pub mod scope;
-pub mod stack;
 pub mod type_system;
 pub mod vm;
 

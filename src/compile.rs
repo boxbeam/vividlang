@@ -14,35 +14,51 @@ fn make_i64_op(
     })
 }
 
-fn make_i64_r_const_op(
-    l: Func<'static>,
+fn make_i64_op_r_const(
+    l: Box<Expr>,
     r: i64,
     f: impl Fn(i64, i64) -> i64 + 'static,
 ) -> Func<'static> {
+    if let Expr::Read(dest, _) = &*l {
+        return make_i64_op_var_const(dest.clone(), r, f);
+    }
+    let l = l.compile();
     make_func(move |stack| {
         let l = l.eval(stack);
         stack.set_val(f(l, r));
     })
 }
 
+fn make_i64_op_var_const(l: Dest, r: i64, f: impl Fn(i64, i64) -> i64 + 'static) -> Func<'static> {
+    match l {
+        Dest::Global(g) => make_func(move |stack| {
+            let l = *stack.get_global(g);
+            stack.set_val(f(l, r));
+        }),
+        Dest::Local(l) => make_func(move |stack| {
+            let l = *stack.get(l);
+            stack.set_val(f(l, r));
+        }),
+    }
+}
+
 impl Operation {
     fn to_func(self, l: Box<Expr>, r: Box<Expr>) -> Func<'static> {
-        let l = l.compile();
-
         if let &Expr::Int(val) = &*r {
             return match self {
-                Operation::Add => make_i64_r_const_op(l, val, |a, b| a + b),
-                Operation::Sub => make_i64_r_const_op(l, val, |a, b| a - b),
-                Operation::Mul => make_i64_r_const_op(l, val, |a, b| a * b),
-                Operation::Div => make_i64_r_const_op(l, val, |a, b| a / b),
-                Operation::Gt => make_i64_r_const_op(l, val, |a, b| (a > b) as i64),
-                Operation::Lt => make_i64_r_const_op(l, val, |a, b| (a < b) as i64),
-                Operation::Gte => make_i64_r_const_op(l, val, |a, b| (a >= b) as i64),
-                Operation::Lte => make_i64_r_const_op(l, val, |a, b| (a <= b) as i64),
-                Operation::Eq => make_i64_r_const_op(l, val, |a, b| (a == b) as i64),
+                Operation::Add => make_i64_op_r_const(l, val, |a, b| a + b),
+                Operation::Sub => make_i64_op_r_const(l, val, |a, b| a - b),
+                Operation::Mul => make_i64_op_r_const(l, val, |a, b| a * b),
+                Operation::Div => make_i64_op_r_const(l, val, |a, b| a / b),
+                Operation::Gt => make_i64_op_r_const(l, val, |a, b| (a > b) as i64),
+                Operation::Lt => make_i64_op_r_const(l, val, |a, b| (a < b) as i64),
+                Operation::Gte => make_i64_op_r_const(l, val, |a, b| (a >= b) as i64),
+                Operation::Lte => make_i64_op_r_const(l, val, |a, b| (a <= b) as i64),
+                Operation::Eq => make_i64_op_r_const(l, val, |a, b| (a == b) as i64),
             };
         }
 
+        let l = l.compile();
         let r = r.compile();
         match self {
             Operation::Add => make_i64_op(l, r, |a, b| a + b),
@@ -75,7 +91,7 @@ pub(crate) enum Expr {
     IfElse(Box<Expr>, Vec<Stmt>, Vec<Stmt>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Dest {
     Global(usize),
     Local(usize),
@@ -225,7 +241,6 @@ impl Expr {
                     unsafe {
                         (*func).func.invoke(&mut inner);
                     }
-                    inner.vm.stack.release(stack_size);
                 })
             }
         };
@@ -253,24 +268,19 @@ fn push_args(mut args: Vec<(Expr, usize)>) -> Func<'static> {
         return make_func(|_| {});
     };
 
-    let mut last = make_func(push_arg(expr, 0, size));
-    let mut addr = size;
+    let mut last = make_func(push_arg(expr, size));
 
     while let Some((expr, size)) = args.pop() {
-        last = make_func_cont(push_arg(expr, addr, size), last);
-        addr += size;
+        last = make_func_cont(push_arg(expr, size), last);
     }
     last
 }
 
-fn push_arg(arg: Expr, addr: usize, size: usize) -> impl Fn(&mut State) {
+fn push_arg(arg: Expr, size: usize) -> impl Fn(&mut State) {
     let arg = arg.compile();
     move |stack| {
         arg.invoke(stack);
-        let src: *mut i64 = stack.val_raw();
-        let dst: *mut i64 = stack.vm.stack.inner[dbg!(stack.vm.stack.len)..].as_mut_ptr();
-        unsafe { std::ptr::copy(src, dst, size) };
-        println!("Put arg {} to addr {}", stack.get::<i64>(addr), addr);
+        stack.push_arg(size);
     }
 }
 
