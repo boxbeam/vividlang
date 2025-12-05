@@ -2,11 +2,16 @@ use std::marker::PhantomData;
 
 use crate::{ir::Operation, vm::StackGuard};
 
-fn make_i64_op(
-    l: Func<'static>,
-    r: Func<'static>,
-    f: impl Fn(i64, i64) -> i64 + 'static,
-) -> Func<'static> {
+fn make_op<T>(l: Box<Expr>, r: Box<Expr>, f: impl Fn(T, T) -> T + 'static) -> Func<'static>
+where
+    T: 'static + Copy,
+{
+    if let &Expr::Int(val) = &*r {
+        let val = unsafe { *(&val as *const _ as *const T) };
+        return make_i64_op_r_const(l, val, f);
+    }
+    let l = l.compile();
+    let r = r.compile();
     make_func(move |stack| {
         let l = l.eval(stack);
         let r = r.eval(stack);
@@ -14,11 +19,10 @@ fn make_i64_op(
     })
 }
 
-fn make_i64_op_r_const(
-    l: Box<Expr>,
-    r: i64,
-    f: impl Fn(i64, i64) -> i64 + 'static,
-) -> Func<'static> {
+fn make_i64_op_r_const<T>(l: Box<Expr>, r: T, f: impl Fn(T, T) -> T + 'static) -> Func<'static>
+where
+    T: 'static + Copy,
+{
     if let Expr::Read(dest, _) = &*l {
         return make_i64_op_var_const(dest.clone(), r, f);
     }
@@ -29,7 +33,10 @@ fn make_i64_op_r_const(
     })
 }
 
-fn make_i64_op_var_const(l: Dest, r: i64, f: impl Fn(i64, i64) -> i64 + 'static) -> Func<'static> {
+fn make_i64_op_var_const<T>(l: Dest, r: T, f: impl Fn(T, T) -> T + 'static) -> Func<'static>
+where
+    T: 'static + Copy,
+{
     match l {
         Dest::Global(g) => make_func(move |stack| {
             let l = *stack.get_global(g);
@@ -44,32 +51,16 @@ fn make_i64_op_var_const(l: Dest, r: i64, f: impl Fn(i64, i64) -> i64 + 'static)
 
 impl Operation {
     fn to_func(self, l: Box<Expr>, r: Box<Expr>) -> Func<'static> {
-        if let &Expr::Int(val) = &*r {
-            return match self {
-                Operation::Add => make_i64_op_r_const(l, val, |a, b| a + b),
-                Operation::Sub => make_i64_op_r_const(l, val, |a, b| a - b),
-                Operation::Mul => make_i64_op_r_const(l, val, |a, b| a * b),
-                Operation::Div => make_i64_op_r_const(l, val, |a, b| a / b),
-                Operation::Gt => make_i64_op_r_const(l, val, |a, b| (a > b) as i64),
-                Operation::Lt => make_i64_op_r_const(l, val, |a, b| (a < b) as i64),
-                Operation::Gte => make_i64_op_r_const(l, val, |a, b| (a >= b) as i64),
-                Operation::Lte => make_i64_op_r_const(l, val, |a, b| (a <= b) as i64),
-                Operation::Eq => make_i64_op_r_const(l, val, |a, b| (a == b) as i64),
-            };
-        }
-
-        let l = l.compile();
-        let r = r.compile();
         match self {
-            Operation::Add => make_i64_op(l, r, |a, b| a + b),
-            Operation::Sub => make_i64_op(l, r, |a, b| a - b),
-            Operation::Mul => make_i64_op(l, r, |a, b| a * b),
-            Operation::Div => make_i64_op(l, r, |a, b| a / b),
-            Operation::Gt => make_i64_op(l, r, |a, b| (a > b) as i64),
-            Operation::Lt => make_i64_op(l, r, |a, b| (a < b) as i64),
-            Operation::Gte => make_i64_op(l, r, |a, b| (a >= b) as i64),
-            Operation::Lte => make_i64_op(l, r, |a, b| (a <= b) as i64),
-            Operation::Eq => make_i64_op(l, r, |a, b| (a == b) as i64),
+            Operation::Add => make_op::<i64>(l, r, |a, b| a + b),
+            Operation::Sub => make_op::<i64>(l, r, |a, b| a - b),
+            Operation::Mul => make_op::<i64>(l, r, |a, b| a * b),
+            Operation::Div => make_op::<i64>(l, r, |a, b| a / b),
+            Operation::Gt => make_op::<i64>(l, r, |a, b| (a > b) as i64),
+            Operation::Lt => make_op::<i64>(l, r, |a, b| (a < b) as i64),
+            Operation::Gte => make_op::<i64>(l, r, |a, b| (a >= b) as i64),
+            Operation::Lte => make_op::<i64>(l, r, |a, b| (a <= b) as i64),
+            Operation::Eq => make_op::<i64>(l, r, |a, b| (a == b) as i64),
         }
     }
 }
