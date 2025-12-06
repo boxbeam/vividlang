@@ -332,9 +332,10 @@ impl TypeSolver {
             Expr::IfElse(expr, if_case, else_case) => {
                 let expr = self.compute_expr_constraint(current_global, expr)?;
                 self.merge(&expr, &Constraint::Concrete(Type::Bool))?;
-                self.compute_block_constraint(current_global, if_case)?;
-                self.compute_block_constraint(current_global, else_case)?;
-                Constraint::Concrete(Type::Void)
+                let if_case = self.compute_block_constraint(current_global, if_case)?;
+                let else_case = self.compute_block_constraint(current_global, else_case)?;
+                self.merge(&if_case, &else_case)?;
+                self.merge(&else_case, &if_case)?
             }
             Expr::Neg(expr) => self.compute_expr_constraint(current_global, expr)?,
             Expr::FunctionCall { func, args } => {

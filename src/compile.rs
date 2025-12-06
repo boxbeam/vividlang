@@ -181,7 +181,7 @@ impl Expr {
             Expr::Int(i) => make_primitive_lit(i),
             Expr::Bool(b) => make_primitive_lit(b),
             Expr::Read(dst, size) => {
-                if size == 1 {
+                if size <= 1 {
                     match dst {
                         Dest::Global(g) => make_func(move |stack| stack.vm.stack[g]),
                         Dest::Local(l) => make_func(move |stack| *stack.get(l)),
@@ -215,7 +215,7 @@ impl Expr {
                 ret_size,
             } => {
                 let push_args = push_args(args);
-                if ret_size == 1 {
+                if ret_size <= 1 {
                     make_func(move |stack| {
                         push_args.invoke(stack);
                         let mut inner = stack.stack_frame(stack_size, args_size);
@@ -250,14 +250,14 @@ fn push_args(mut args: Vec<(Expr, usize)>) -> Func<'static> {
         return make_func(|_| 0);
     };
 
-    let mut last = if size == 1 {
+    let mut last = if size <= 1 {
         make_func(push_arg_primitive(expr))
     } else {
         make_func(push_arg(expr, size))
     };
 
     while let Some((expr, size)) = args.pop() {
-        last = if size == 1 {
+        last = if size <= 1 {
             make_func_cont(push_arg_primitive(expr), last)
         } else {
             make_func_cont(push_arg(expr, size), last)
@@ -356,7 +356,7 @@ fn compile_stmt_continuation<C: MaybeCont + 'static>(stmt: Stmt, next: C) -> Fun
             val: expr,
         } => {
             let expr = expr.compile();
-            if size == 1 {
+            if size <= 1 {
                 match dst {
                     Dest::Global(g) => make_func_cont(
                         move |stack| {
