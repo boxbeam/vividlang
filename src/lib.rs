@@ -62,10 +62,8 @@ pub fn compile_program(functions: Vec<FunctionDef>) -> Result<Vm, CompileError> 
     }
 
     let mut bytecode = BytecodeEmitter::new(&mut type_solver);
-    let mut stack_layouts = BTreeMap::new();
     for (id, layout) in &layouts {
         bytecode.declare_function(*id, layout)?;
-        stack_layouts.insert(*id, bytecode.types.compute_stack_layout(layout)?);
     }
 
     let mut vm = Vm::default();
@@ -73,7 +71,7 @@ pub fn compile_program(functions: Vec<FunctionDef>) -> Result<Vm, CompileError> 
     for (id, func) in function_map {
         let name = func.name.name();
         let func = bytecode.translate_function(id, func)?;
-        let layout = stack_layouts.remove(&id).unwrap();
+        let layout = func.layout;
 
         let func = compile::compile_stmts(func.stmts);
         let id = vm.register_function(vm::CompiledFunction { layout, func });

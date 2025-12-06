@@ -242,6 +242,11 @@ impl TypeSolver {
             size += c.size();
         }
 
+        let Some(Constraint::Concrete(ret)) = self.get_constraint(abstract_layout.ret) else {
+            missing.push(abstract_layout.ret);
+            return Err(TypeError::MissingTypes(missing));
+        };
+
         if !missing.is_empty() {
             return Err(TypeError::MissingTypes(missing));
         }
@@ -249,6 +254,7 @@ impl TypeSolver {
         Ok(StackLayout {
             locals: types,
             size,
+            ret_size: ret.size(),
         })
     }
 

@@ -108,10 +108,6 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
         self.entries.get_mut(id.raw())
     }
 
-    pub fn key(&self, id: Id<V>) -> &K {
-        &self.reverse_lookup[id.raw()]
-    }
-
     pub fn lookup_id<Q: ?Sized>(&self, key: &Q) -> Option<Id<V>>
     where
         K: Borrow<Q>,
@@ -129,14 +125,6 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
         self.get(self.lookup_id(key)?)
     }
 
-    pub fn lookup_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        self.get_mut(self.lookup_id(key)?)
-    }
-
     /// Unbinds a name from the registry, but does not remove the entry
     pub fn unbind<Q: ?Sized>(&mut self, key: &Q)
     where
@@ -147,10 +135,6 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
             return;
         };
         C::unbind(entry);
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
     }
 }
 

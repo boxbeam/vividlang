@@ -10,6 +10,7 @@ use crate::{
 pub struct StackLayout {
     pub locals: Vec<(Type, usize)>,
     pub size: usize,
+    pub ret_size: usize,
 }
 
 pub struct BytecodeFunction {
@@ -152,6 +153,7 @@ impl<'a> BytecodeEmitter<'a> {
                     .map(|(typ, _)| typ.size())
                     .collect();
                 let stack_size = stack_layout.size;
+                let ret_size = stack_layout.ret_size;
 
                 let mut new_args = vec![];
                 let mut args_size = 0;
@@ -166,6 +168,7 @@ impl<'a> BytecodeEmitter<'a> {
                     stack_size,
                     args: new_args,
                     args_size,
+                    ret_size,
                 }
             }
         })

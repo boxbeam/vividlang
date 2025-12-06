@@ -218,27 +218,13 @@ impl<'a> NameResolver<'a> {
         }
     }
 
-    pub fn arguments(&mut self, args: impl IntoIterator<Item = Rc<str>>) {
-        for arg in args {
-            self.variables.insert(arg, ());
-        }
-    }
-
-    pub fn scope(&mut self) -> Scope {
+    pub fn scope(&'_ mut self) -> Scope<'_> {
         Scope {
             namespace: self.namespace.clone(),
             global: &mut self.global,
             variables: &mut self.variables,
             locals: vec![],
         }
-    }
-
-    pub fn namespace(&self) -> &Namespace {
-        &self.namespace
-    }
-
-    pub(crate) fn reset(&mut self) {
-        self.variables = Default::default();
     }
 
     pub fn resolve_function(&mut self, function: &mut FunctionDef) -> Result<(), ResolveError> {
@@ -260,7 +246,7 @@ pub struct Scope<'a> {
 
 impl<'a> Scope<'a> {
     /// Creates a child scope.
-    pub fn scope(&mut self) -> Scope {
+    pub fn scope(&'_ mut self) -> Scope<'_> {
         Scope {
             namespace: self.namespace.clone(),
             variables: &mut self.variables,

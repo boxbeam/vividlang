@@ -71,7 +71,7 @@ impl<'a> Drop for StackGuard<'a> {
 }
 
 impl<'a> StackGuard<'a> {
-    pub fn stack_frame(&mut self, stack_size: usize, arg_size: usize) -> StackGuard {
+    pub fn stack_frame(&'_ mut self, stack_size: usize, arg_size: usize) -> StackGuard<'_> {
         self.vm.stack_frame(stack_size, arg_size)
     }
 
@@ -113,6 +113,11 @@ impl<'a> StackGuard<'a> {
         unsafe { std::ptr::copy(src, dst, size) };
         self.vm.stack_len += size;
     }
+
+    pub fn push_arg_raw(&mut self, val: i64) {
+        self.vm.stack[self.vm.stack_len] = val;
+        self.vm.stack_len += 1;
+    }
 }
 
 impl Vm {
@@ -122,7 +127,7 @@ impl Vm {
         }
     }
 
-    pub fn stack_frame(&mut self, stack_size: usize, arg_size: usize) -> StackGuard {
+    pub fn stack_frame(&'_ mut self, stack_size: usize, arg_size: usize) -> StackGuard<'_> {
         self.stack_frames.push(self.stack_base);
         self.stack_base = self.stack_len - arg_size;
         self.stack_len = self.stack_base + stack_size;
