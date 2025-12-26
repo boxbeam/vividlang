@@ -53,7 +53,7 @@ impl Vm {
             unsafe {
                 let func = &*func;
                 let mut stack = self.stack_frame(func.layout.size, 0);
-                func.func.invoke(&mut stack);
+                func.func.invoke(&mut stack, 0);
             }
         }
     }
@@ -95,21 +95,21 @@ impl<'a> StackGuard<'a> {
         unsafe { &mut *stack }
     }
 
-    pub fn val_raw<T>(&mut self) -> *mut T {
+    pub fn val_register_raw<T>(&mut self) -> *mut T {
         self.vm.return_register.get() as *mut T
     }
 
-    pub fn get_val<T>(&mut self) -> T {
-        unsafe { std::ptr::read(self.val_raw()) }
+    pub fn get_val_register<T>(&mut self) -> T {
+        unsafe { std::ptr::read(self.val_register_raw()) }
     }
 
-    pub fn set_val<T>(&mut self, val: T) {
-        unsafe { *self.val_raw() = val }
+    pub fn set_val_register<T>(&mut self, val: T) {
+        unsafe { *self.val_register_raw() = val }
     }
 
     pub fn push_arg(&mut self, size: usize) {
         let dst = self.vm.stack[self.vm.stack_len..].as_mut_ptr();
-        let src = self.val_raw::<i64>();
+        let src = self.val_register_raw::<i64>();
         unsafe { std::ptr::copy(src, dst, size) };
         self.vm.stack_len += size;
     }

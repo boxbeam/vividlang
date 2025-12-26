@@ -7,7 +7,7 @@ use untwine::parser;
 
 parser! {
     sep = #[" \t\r"]+;
-    lbsep = #{|c| c.is_ascii_whitespace()}+;
+    lbsep = #{|c| c.is_ascii_whitespace() || *c == ';'}+;
     comma = sep? "," sep?;
 
     int: num=<'0'-'9'+> -> Expr { Expr::Int(num.parse().unwrap()) }
