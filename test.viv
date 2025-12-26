@@ -7,5 +7,5 @@ fn fib(n: Int) -> Int {
 }
 
 fn main() {
-	print fib(30)
+	print fib(fib(4))
 }

@@ -14,19 +14,23 @@ fn make_op<T>(
     r: Box<Expr>,
     f: impl Fn(T, T) -> T + 'static,
     cont: impl MaybeCont + 'static,
+    stack_size: usize,
 ) -> Func<'static>
 where
     T: 'static + Copy,
 {
     if let &Expr::Int(val) = &*r {
         let val = unsafe { *(&val as *const _ as *const T) };
-        return make_op_r_const(l, val, f, cont);
+        return make_op_r_const(l, val, f, cont, stack_size);
     }
-    let r = r.compile(());
-    l.compile(make_func(move |stack, prev| {
-        let r = r.invoke(stack, 0);
-        cont.cont(stack, transmute(f(transmute(prev), transmute(r))))
-    }))
+    let r = r.compile((), stack_size);
+    l.compile(
+        make_func(move |stack, prev| {
+            let r = r.invoke(stack, 0);
+            cont.cont(stack, transmute(f(transmute(prev), transmute(r))))
+        }),
+        stack_size,
+    )
 }
 
 fn make_op_r_const<T>(
@@ -34,6 +38,7 @@ fn make_op_r_const<T>(
     r: T,
     f: impl Fn(T, T) -> T + 'static,
     cont: impl MaybeCont + 'static,
+    stack_size: usize,
 ) -> Func<'static>
 where
     T: 'static + Copy,
@@ -42,9 +47,10 @@ where
         return make_i64_op_var_const(dest.clone(), r, f, cont);
     }
 
-    l.compile(make_func(move |stack, prev| {
-        cont.cont(stack, transmute(f(transmute(prev), r)))
-    }))
+    l.compile(
+        make_func(move |stack, prev| cont.cont(stack, transmute(f(transmute(prev), r)))),
+        stack_size,
+    )
 }
 
 fn make_i64_op_var_const<T>(
@@ -69,17 +75,23 @@ where
 }
 
 impl Operation {
-    fn to_func(self, l: Box<Expr>, r: Box<Expr>, cont: impl MaybeCont + 'static) -> Func<'static> {
+    fn to_func(
+        self,
+        l: Box<Expr>,
+        r: Box<Expr>,
+        cont: impl MaybeCont + 'static,
+        stack_size: usize,
+    ) -> Func<'static> {
         match self {
-            Operation::Add => make_op::<i64>(l, r, |a, b| a + b, cont),
-            Operation::Sub => make_op::<i64>(l, r, |a, b| a - b, cont),
-            Operation::Mul => make_op::<i64>(l, r, |a, b| a * b, cont),
-            Operation::Div => make_op::<i64>(l, r, |a, b| a / b, cont),
-            Operation::Gt => make_op::<i64>(l, r, |a, b| (a > b) as i64, cont),
-            Operation::Lt => make_op::<i64>(l, r, |a, b| (a < b) as i64, cont),
-            Operation::Gte => make_op::<i64>(l, r, |a, b| (a >= b) as i64, cont),
-            Operation::Lte => make_op::<i64>(l, r, |a, b| (a <= b) as i64, cont),
-            Operation::Eq => make_op::<i64>(l, r, |a, b| (a == b) as i64, cont),
+            Operation::Add => make_op::<i64>(l, r, |a, b| a + b, cont, stack_size),
+            Operation::Sub => make_op::<i64>(l, r, |a, b| a - b, cont, stack_size),
+            Operation::Mul => make_op::<i64>(l, r, |a, b| a * b, cont, stack_size),
+            Operation::Div => make_op::<i64>(l, r, |a, b| a / b, cont, stack_size),
+            Operation::Gt => make_op::<i64>(l, r, |a, b| (a > b) as i64, cont, stack_size),
+            Operation::Lt => make_op::<i64>(l, r, |a, b| (a < b) as i64, cont, stack_size),
+            Operation::Gte => make_op::<i64>(l, r, |a, b| (a >= b) as i64, cont, stack_size),
+            Operation::Lte => make_op::<i64>(l, r, |a, b| (a <= b) as i64, cont, stack_size),
+            Operation::Eq => make_op::<i64>(l, r, |a, b| (a == b) as i64, cont, stack_size),
         }
     }
 }
@@ -91,13 +103,7 @@ pub(crate) enum Expr {
     Read(Dest, usize),
     BinOp(Operation, Box<Expr>, Box<Expr>),
     IntNeg(Box<Expr>),
-    FunctionCall {
-        id: usize,
-        stack_size: usize,
-        args_size: usize,
-        args: Vec<(Expr, usize)>,
-        ret_size: usize,
-    },
+    FunctionCall { id: usize, args: Vec<(Expr, usize)> },
     IfElse(Box<Expr>, Vec<Stmt>, Vec<Stmt>),
 }
 
@@ -118,7 +124,7 @@ pub(crate) enum Stmt {
 
 pub type State<'a> = StackGuard<'a>;
 
-type RawFunc = for<'a> fn(*const (), &'a mut State, prev: i64) -> i64;
+type RawFunc = for<'a> fn(*const (), State, prev: i64) -> i64;
 
 pub(crate) struct Func<'a> {
     f: RawFunc,
@@ -138,7 +144,7 @@ impl std::fmt::Debug for Func<'_> {
 /// are passed in the return register of the VM.
 fn make_func<'a, F>(f: F) -> Func<'a>
 where
-    F: Fn(&mut State, i64) -> i64 + 'a,
+    F: Fn(State, i64) -> i64 + 'a,
 {
     let data = Rc::into_raw(Rc::new(f)) as *const ();
     let f: RawFunc = |data: *const (), stack, prev| {
@@ -160,7 +166,7 @@ where
 
 fn make_func_cont<'a, F>(f: F, cont: impl MaybeCont + 'a) -> Func<'a>
 where
-    F: Fn(&mut State, i64) -> i64 + 'a,
+    F: Fn(State, i64) -> i64 + 'a,
 {
     make_func(move |stack, prev| {
         let val = f(stack, prev);
@@ -183,38 +189,38 @@ impl<'a> Drop for Func<'a> {
 }
 
 trait MaybeCont {
-    fn cont(&self, stack: &mut State, prev: i64) -> i64;
+    fn cont(&self, stack: State, prev: i64) -> i64;
 }
 
 impl<'a> MaybeCont for Func<'a> {
-    fn cont(&self, stack: &mut State, prev: i64) -> i64 {
+    fn cont(&self, stack: State, prev: i64) -> i64 {
         self.invoke(stack, prev)
     }
 }
 
 impl MaybeCont for () {
-    fn cont(&self, _stack: &mut State, prev: i64) -> i64 {
+    fn cont(&self, _stack: State, prev: i64) -> i64 {
         prev
     }
 }
 
 impl<'a> Func<'a> {
-    pub fn invoke(&self, stack: &mut State, prev: i64) -> i64 {
+    pub fn invoke(&self, stack: State, prev: i64) -> i64 {
         (self.f)(self.data, stack, prev)
     }
 }
 
 impl Expr {
-    fn compile(self, cont: impl MaybeCont + 'static) -> Func<'static> {
+    fn compile(self, cont: impl MaybeCont + 'static, stack_size: usize) -> Func<'static> {
         let func = match self {
             Expr::Int(i) => make_primitive_lit(i, cont),
             Expr::Bool(b) => make_primitive_lit(b, cont),
             Expr::Read(dst, size) => {
                 if size <= 1 {
                     match dst {
-                        Dest::Global(g) => {
-                            make_func(move |stack, _| cont.cont(stack, stack.vm.stack[g]))
-                        }
+                        Dest::Global(g) => make_func(move |stack, _| {
+                            cont.cont(stack, unsafe { stack.get_global_raw::<i64>(g).read() })
+                        }),
                         Dest::Local(l) => make_func(move |stack, _| {
                             let prev = *stack.get(l);
                             cont.cont(stack, prev)
@@ -224,41 +230,34 @@ impl Expr {
                     todo!()
                 }
             }
-            Expr::BinOp(op, l, r) => op.to_func(l, r, cont),
-            Expr::IntNeg(expr) => {
-                expr.compile(make_func(move |stack, prev| cont.cont(stack, -prev)))
-            }
-            Expr::IfElse(expr, if_true, if_false) => {
-                let if_true = compile_stmts(if_true);
-                let if_false = compile_stmts(if_false);
-                expr.compile(make_func(move |stack, prev| {
-                    let val = if prev == 1 {
-                        if_true.invoke(stack, 0)
-                    } else {
-                        if_false.invoke(stack, 0)
-                    };
-                    cont.cont(stack, val)
-                }))
-            }
-            Expr::FunctionCall {
-                id,
+            Expr::BinOp(op, l, r) => op.to_func(l, r, cont, stack_size),
+            Expr::IntNeg(expr) => expr.compile(
+                make_func(move |stack, prev| cont.cont(stack, -prev)),
                 stack_size,
-                args_size,
-                args,
-                ret_size,
-            } => {
-                let call = if ret_size <= 1 {
-                    make_func(move |stack, _| {
-                        let mut inner = stack.stack_frame(stack_size, args_size);
-                        let func = inner.vm.get_function(id);
-                        let val = unsafe { (*func).func.invoke(&mut inner, 0) };
-                        drop(inner);
+            ),
+            Expr::IfElse(expr, if_true, if_false) => {
+                let if_true = compile_stmts(if_true, stack_size);
+                let if_false = compile_stmts(if_false, stack_size);
+                expr.compile(
+                    make_func(move |stack, prev| {
+                        let val = if prev == 1 {
+                            if_true.invoke(stack, 0)
+                        } else {
+                            if_false.invoke(stack, 0)
+                        };
                         cont.cont(stack, val)
-                    })
-                } else {
-                    todo!()
-                };
-                push_args(args, call)
+                    }),
+                    stack_size,
+                )
+            }
+            Expr::FunctionCall { id, args } => {
+                let call = make_func(move |mut stack, _| {
+                    let inner = stack.stack_frame(stack_size);
+                    let func = inner.vm.get_function(id);
+                    let val = unsafe { (*func).func.invoke(inner, 0) };
+                    cont.cont(stack, val)
+                });
+                push_args(args, call, stack_size)
             }
         };
 
@@ -279,62 +278,89 @@ impl Expr {
     }
 }
 
-fn push_args(mut args: Vec<(Expr, usize)>, cont: impl MaybeCont + 'static) -> Func<'static> {
+fn push_args(
+    mut args: Vec<(Expr, usize)>,
+    cont: impl MaybeCont + 'static,
+    stack_size: usize,
+) -> Func<'static> {
     let Some((expr, size)) = args.pop() else {
         return make_func(|_, _| 0);
     };
 
     let mut last = if size <= 1 {
-        push_arg_primitive(expr, cont)
+        push_arg_primitive(expr, cont, stack_size)
     } else {
-        push_arg(expr, size, cont)
+        push_arg(expr, size, cont, stack_size)
     };
+
+    let mut addr = stack_size + size;
 
     while let Some((expr, size)) = args.pop() {
         last = if size <= 1 {
-            push_arg_primitive(expr, last)
+            push_arg_primitive(expr, last, addr)
         } else {
-            push_arg(expr, size, last)
+            push_arg(expr, size, last, addr)
         };
+        addr += size;
     }
     last
 }
 
-fn push_arg_primitive(arg: Expr, cont: impl MaybeCont + 'static) -> Func<'static> {
-    arg.compile(make_func(move |stack, prev| {
-        stack.push_arg_raw(prev);
-        cont.cont(stack, 0)
-    }))
+fn push_arg_primitive(arg: Expr, cont: impl MaybeCont + 'static, pos: usize) -> Func<'static> {
+    arg.compile(
+        make_func(move |stack, prev| {
+            unsafe { stack.stack.offset(pos as isize).write(prev) }
+            cont.cont(stack, 0)
+        }),
+        pos,
+    )
 }
 
-fn push_arg(arg: Expr, size: usize, cont: impl MaybeCont + 'static) -> Func<'static> {
-    arg.compile(make_func(move |stack, _prev| {
-        stack.push_arg(size);
-        cont.cont(stack, 0)
-    }))
+fn push_arg(arg: Expr, size: usize, cont: impl MaybeCont + 'static, pos: usize) -> Func<'static> {
+    arg.compile(
+        make_func(move |stack, _prev| {
+            unsafe {
+                let dst = stack.stack.offset(pos as isize);
+                let src = stack.val_register_raw::<i64>();
+                std::ptr::copy(src, dst, size);
+            }
+            cont.cont(stack, 0)
+        }),
+        pos,
+    )
 }
 
-fn compile_stmt_continuation<C: MaybeCont + 'static>(stmt: Stmt, cont: C) -> Func<'static> {
+fn compile_stmt_continuation<C: MaybeCont + 'static>(
+    stmt: Stmt,
+    cont: C,
+    stack_size: usize,
+) -> Func<'static> {
     match stmt {
-        Stmt::Expr(expr) => expr.compile(cont),
-        Stmt::Print(expr) => expr.compile(make_func_cont(
-            move |stack, prev| {
-                println!("{prev}");
-                0
-            },
-            cont,
-        )),
-        Stmt::If(expr, block) => {
-            let block = compile_stmts(block);
-            expr.compile(make_func_cont(
-                move |stack, prev| {
-                    if prev == 1 {
-                        block.invoke(stack, 0);
-                    }
+        Stmt::Expr(expr) => expr.compile(cont, stack_size),
+        Stmt::Print(expr) => expr.compile(
+            make_func_cont(
+                move |_stack, prev| {
+                    println!("{prev}");
                     0
                 },
                 cont,
-            ))
+            ),
+            stack_size,
+        ),
+        Stmt::If(expr, block) => {
+            let block = compile_stmts(block, stack_size);
+            expr.compile(
+                make_func_cont(
+                    move |stack, prev| {
+                        if prev == 1 {
+                            block.invoke(stack, 0);
+                        }
+                        0
+                    },
+                    cont,
+                ),
+                stack_size,
+            )
         }
         Stmt::Input(pos) => match pos {
             Dest::Global(g) => make_func_cont(
@@ -400,19 +426,19 @@ fn compile_stmt_continuation<C: MaybeCont + 'static>(stmt: Stmt, cont: C) -> Fun
                     ),
                 }
             };
-            expr.compile(assign)
+            expr.compile(assign, stack_size)
         }
     }
 }
 
-pub fn compile_stmts(mut stmts: Vec<Stmt>) -> Func<'static> {
+pub fn compile_stmts(mut stmts: Vec<Stmt>, stack_size: usize) -> Func<'static> {
     let Some(last) = stmts.pop() else {
         return make_func(|_, _| 0);
     };
-    let mut last = compile_stmt_continuation(last, ());
+    let mut last = compile_stmt_continuation(last, (), stack_size);
 
     while let Some(prev) = stmts.pop() {
-        last = compile_stmt_continuation(prev, last);
+        last = compile_stmt_continuation(prev, last, stack_size);
     }
     last
 }

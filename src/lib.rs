@@ -73,7 +73,7 @@ pub fn compile_program(functions: Vec<FunctionDef>) -> Result<Vm, CompileError> 
         let func = bytecode.translate_function(id, func)?;
         let layout = func.layout;
 
-        let func = compile::compile_stmts(func.stmts);
+        let func = compile::compile_stmts(func.stmts, layout.size);
         let id = vm.register_function(vm::CompiledFunction { layout, func });
         if &*name == "main" {
             vm.entry_point = Some(id);

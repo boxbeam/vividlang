@@ -152,23 +152,16 @@ impl<'a> BytecodeEmitter<'a> {
                     .take(args.len())
                     .map(|(typ, _)| typ.size())
                     .collect();
-                let stack_size = stack_layout.size;
-                let ret_size = stack_layout.ret_size;
 
                 let mut new_args = vec![];
-                let mut args_size = 0;
                 for (arg, size) in args.into_iter().zip(arg_sizes) {
                     let new_arg = self.translate_expr(layout, id, arg)?;
                     new_args.push((new_arg, size));
-                    args_size += size;
                 }
 
                 compile::Expr::FunctionCall {
                     id: func_addr,
-                    stack_size,
                     args: new_args,
-                    args_size,
-                    ret_size,
                 }
             }
         })

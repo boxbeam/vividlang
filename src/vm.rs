@@ -3,11 +3,8 @@ use std::cell::UnsafeCell;
 use crate::{bytecode::StackLayout, compile::Func};
 
 pub struct Vm {
-    pub stack: Box<[i64]>,
+    pub stack: UnsafeCell<Box<[i64]>>,
     return_register: UnsafeCell<[i64; 256]>,
-    stack_frames: Vec<usize>,
-    stack_base: usize,
-    stack_len: usize,
     functions: UnsafeCell<Vec<CompiledFunction>>,
     pub(crate) entry_point: Option<usize>,
 }
@@ -15,11 +12,8 @@ pub struct Vm {
 impl Default for Vm {
     fn default() -> Self {
         Vm {
-            stack: vec![0; 64 * 1024].into(),
+            stack: UnsafeCell::new(vec![0; 64 * 1024].into()),
             return_register: [0; 256].into(),
-            stack_frames: vec![],
-            stack_base: 0,
-            stack_len: 0,
             functions: Default::default(),
             entry_point: None,
         }
@@ -47,92 +41,67 @@ impl Vm {
         }
     }
 
+    pub fn base_frame(&'_ mut self) -> StackGuard<'_> {
+        StackGuard {
+            stack: self.stack.get_mut().as_mut_ptr(),
+            vm: self,
+        }
+    }
+
     pub fn run(&mut self) {
         if let Some(entry_point) = self.entry_point {
             let func = self.get_function(entry_point);
             unsafe {
                 let func = &*func;
-                let mut stack = self.stack_frame(func.layout.size, 0);
-                func.func.invoke(&mut stack, 0);
+                let stack = self.base_frame();
+                func.func.invoke(stack, 0);
             }
         }
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct StackGuard<'a> {
-    pub vm: &'a mut Vm,
-}
-
-impl<'a> Drop for StackGuard<'a> {
-    fn drop(&mut self) {
-        self.vm.stack_len = self.vm.stack_base;
-        self.vm.stack_base = self.vm.stack_frames.pop().expect("Stack frame is present");
-    }
+    pub stack: *mut i64,
+    pub vm: &'a Vm,
 }
 
 impl<'a> StackGuard<'a> {
-    pub fn stack_frame(&'_ mut self, stack_size: usize, arg_size: usize) -> StackGuard<'_> {
-        self.vm.stack_frame(stack_size, arg_size)
+    pub fn stack_frame(&'_ mut self, current_stack_size: usize) -> StackGuard<'_> {
+        StackGuard {
+            vm: self.vm,
+            stack: unsafe { self.stack.offset(current_stack_size as isize) },
+        }
     }
 
-    pub fn get<T>(&mut self, addr: usize) -> &mut T {
+    pub fn get<T>(&self, addr: usize) -> &mut T {
         let stack = self.get_raw(addr);
         unsafe { &mut *stack }
     }
 
-    pub fn get_raw<T>(&mut self, addr: usize) -> *mut T {
-        let absolute_addr = self.vm.stack_base + addr;
-        let stack = self.vm.stack[absolute_addr..].as_mut_ptr() as *mut T;
-        stack
+    pub fn get_raw<T>(&self, addr: usize) -> *mut T {
+        unsafe { self.stack.offset(addr as isize) as _ }
     }
 
-    pub fn get_global_raw<T>(&mut self, addr: usize) -> *mut T {
-        self.vm.stack[addr..].as_mut_ptr() as *mut T
+    pub fn get_global_raw<T>(&self, addr: usize) -> *mut T {
+        unsafe { (*self.vm.stack.get()).as_mut_ptr().offset(addr as isize) as *mut T }
     }
 
-    pub fn get_global<T>(&mut self, addr: usize) -> &mut T {
+    pub fn get_global<T>(&self, addr: usize) -> &mut T {
         let stack = self.get_global_raw(addr);
         unsafe { &mut *stack }
     }
 
-    pub fn val_register_raw<T>(&mut self) -> *mut T {
+    pub fn val_register_raw<T>(&self) -> *mut T {
         self.vm.return_register.get() as *mut T
     }
 
-    pub fn get_val_register<T>(&mut self) -> T {
+    pub fn get_val_register<T>(&self) -> T {
         unsafe { std::ptr::read(self.val_register_raw()) }
     }
 
     pub fn set_val_register<T>(&mut self, val: T) {
         unsafe { *self.val_register_raw() = val }
-    }
-
-    pub fn push_arg(&mut self, size: usize) {
-        let dst = self.vm.stack[self.vm.stack_len..].as_mut_ptr();
-        let src = self.val_register_raw::<i64>();
-        unsafe { std::ptr::copy(src, dst, size) };
-        self.vm.stack_len += size;
-    }
-
-    pub fn push_arg_raw(&mut self, val: i64) {
-        self.vm.stack[self.vm.stack_len] = val;
-        self.vm.stack_len += 1;
-    }
-}
-
-impl Vm {
-    pub fn reserve(&mut self, stack_size: usize) {
-        if self.stack_len + stack_size > self.stack.len() {
-            panic!("Stack overflow");
-        }
-    }
-
-    pub fn stack_frame(&'_ mut self, stack_size: usize, arg_size: usize) -> StackGuard<'_> {
-        self.stack_frames.push(self.stack_base);
-        self.stack_base = self.stack_len - arg_size;
-        self.stack_len = self.stack_base + stack_size;
-
-        StackGuard { vm: self }
     }
 }
 
