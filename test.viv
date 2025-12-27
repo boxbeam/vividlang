@@ -6,6 +6,11 @@ fn fib(n) {
 	}
 }
 
+fn f() {
+	print 1
+	f();
+}
+
 fn main() {
 	print fib(30)
 }

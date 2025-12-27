@@ -4,6 +4,7 @@ use crate::{bytecode::StackLayout, compile::Func};
 
 pub struct Vm {
     pub stack: UnsafeCell<Box<[i64]>>,
+    stack_size: usize,
     return_register: UnsafeCell<[i64; 256]>,
     functions: UnsafeCell<Vec<CompiledFunction>>,
     pub(crate) entry_point: Option<usize>,
@@ -11,8 +12,10 @@ pub struct Vm {
 
 impl Default for Vm {
     fn default() -> Self {
+        let stack_size = 64 * 1024;
         Vm {
-            stack: UnsafeCell::new(vec![0; 64 * 1024].into()),
+            stack: UnsafeCell::new(vec![0; stack_size].into()),
+            stack_size,
             return_register: [0; 256].into(),
             functions: Default::default(),
             entry_point: None,
@@ -68,6 +71,14 @@ pub struct StackGuard<'a> {
 
 impl<'a> StackGuard<'a> {
     pub fn stack_frame(&'_ mut self, current_stack_size: usize) -> StackGuard<'_> {
+        unsafe {
+            let vm_stack = (*self.vm.stack.get()).as_mut_ptr();
+            if self.stack.offset_from(vm_stack).abs() as usize + current_stack_size
+                >= self.vm.stack_size
+            {
+                panic!("Stack overflow");
+            }
+        }
         StackGuard {
             vm: self.vm,
             stack: unsafe { self.stack.offset(current_stack_size as isize) },

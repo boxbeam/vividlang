@@ -280,11 +280,11 @@ impl Expr {
 
 fn push_args(
     mut args: Vec<(Expr, usize)>,
-    cont: impl MaybeCont + 'static,
+    cont: Func<'static>,
     stack_size: usize,
 ) -> Func<'static> {
     let Some((expr, size)) = args.pop() else {
-        return make_func(|_, _| 0);
+        return cont;
     };
 
     let mut last = if size <= 1 {
