@@ -40,7 +40,7 @@ impl<T> Eq for Id<T> {}
 
 impl<T> std::fmt::Debug for Id<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Id({})", self.0)
+        write!(f, "Id<{}>({})", std::any::type_name::<T>(), self.0)
     }
 }
 
