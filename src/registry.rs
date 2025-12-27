@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
@@ -89,7 +90,8 @@ pub trait CollisionStrategy {
 impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
     pub fn insert(&mut self, key: K, value: V) -> Option<Id<V>>
     where
-        K: Clone,
+        K: Clone + Debug,
+        V: Debug,
     {
         let id = self.entries.len();
         let key_clone = key.clone();
@@ -135,6 +137,11 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
             return;
         };
         C::unbind(entry);
+    }
+
+    #[allow(dead_code)]
+    pub fn entries(&self) -> &Vec<V> {
+        &self.entries
     }
 }
 

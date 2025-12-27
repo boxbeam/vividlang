@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 untwine = "0.9.4"
+
+[features]
+ts_debug = []

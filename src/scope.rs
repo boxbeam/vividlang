@@ -9,7 +9,7 @@ use crate::{
     type_system::{Trait, TraitImpl, Type},
 };
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Namespace {
     name: Rc<str>,
 }
@@ -45,7 +45,7 @@ impl Namespace {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GlobalValue {
     key: GlobalKey,
 }

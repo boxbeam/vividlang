@@ -13,8 +13,9 @@ pub use type_system::ResolveError;
 use crate::{
     bytecode::BytecodeEmitter,
     ir::FunctionDef,
-    scope::{GlobalScope, NameResolver},
-    type_system::{TypeError, TypeSolver},
+    registry::Id,
+    scope::{GlobalScope, GlobalValue, NameResolver},
+    type_system::{FunctionLayout, TypeError, TypeSolver},
     vm::Vm,
 };
 
@@ -40,7 +41,7 @@ pub fn compile_program(functions: Vec<FunctionDef>) -> Result<Vm, CompileError> 
     let mut global = GlobalScope::default();
     let namespace = global.root_namespace();
 
-    let mut function_map = BTreeMap::new();
+    let mut function_map: BTreeMap<Id<GlobalValue>, FunctionDef> = Default::default();
 
     for func in functions {
         let key = namespace.key(func.name.name());
@@ -54,12 +55,13 @@ pub fn compile_program(functions: Vec<FunctionDef>) -> Result<Vm, CompileError> 
     }
 
     let mut type_solver = TypeSolver::default();
-    let mut layouts = BTreeMap::new();
+    let mut layouts: BTreeMap<Id<GlobalValue>, FunctionLayout> = Default::default();
     for (id, func) in &function_map {
         type_solver.resolve_function(*id, func)?;
         let layout = type_solver.compute_abstract_layout(*id, func);
         layouts.insert(*id, layout);
     }
+    type_solver.log_entries();
 
     let mut bytecode = BytecodeEmitter::new(&mut type_solver);
     for (id, layout) in &layouts {

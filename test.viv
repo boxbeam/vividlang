@@ -1,4 +1,4 @@
-fn fib(n: Int) -> Int {
+fn fib(n) {
 	if n > 1 {
 		fib(n - 1) + fib(n - 2)
 	} else {
@@ -7,5 +7,5 @@ fn fib(n: Int) -> Int {
 }
 
 fn main() {
-	print fib(fib(4))
+	print fib(30)
 }

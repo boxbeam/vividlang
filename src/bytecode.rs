@@ -18,7 +18,7 @@ pub struct BytecodeFunction {
     pub layout: StackLayout,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct GlobalAddress {
     addr: usize,
 }

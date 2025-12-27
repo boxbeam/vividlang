@@ -10,6 +10,13 @@ use crate::{
     scope::{GlobalKey, GlobalValue, Location},
 };
 
+macro_rules! debug {
+    ($($v:expr),+) => {
+        #[cfg(feature = "ts_debug")]
+        println!("[{}:{}:{}] {}", file!(), line!(), column!(), format!($($v),+));
+    };
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Type {
     Int,
@@ -89,7 +96,7 @@ pub enum ResolveError {
     MissingReturnType,
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub enum TypeKey {
     Scoped(Id<GlobalValue>, Id<()>),
     Return(Id<GlobalValue>),
@@ -199,10 +206,16 @@ pub fn type_key(current_global: Id<GlobalValue>, loc: Location) -> TypeKey {
 
 impl TypeSolver {
     pub fn constraint_id(&mut self, key: TypeKey) -> Id<Constraint> {
-        self.constraints
+        let id = self
+            .constraints
             .lookup_id(&key)
-            .or_else(|| self.constraints.insert(key, Constraint::Unknown))
-            .unwrap()
+            .or_else(|| {
+                let id = self.constraints.insert(key.clone(), Constraint::Unknown);
+                debug!("Creating type ID: {:?} = {:?}", id.unwrap(), key);
+                id
+            })
+            .unwrap();
+        id
     }
 
     pub fn declare_trait(&mut self, key: GlobalKey) -> Option<Trait> {
@@ -235,6 +248,10 @@ impl TypeSolver {
             .copied()
         {
             let Some(Constraint::Concrete(c)) = self.get_constraint(arg) else {
+                debug!(
+                    "Missing argument constraint: {arg:?} = {:?}",
+                    self.get_constraint(arg)
+                );
                 missing.push(arg);
                 continue;
             };
@@ -243,6 +260,11 @@ impl TypeSolver {
         }
 
         let Some(Constraint::Concrete(ret)) = self.get_constraint(abstract_layout.ret) else {
+            debug!(
+                "Missing return constraint: {:?} = {:?}",
+                abstract_layout.ret,
+                self.get_constraint(abstract_layout.ret)
+            );
             missing.push(abstract_layout.ret);
             return Err(TypeError::MissingTypes(missing));
         };
@@ -267,6 +289,10 @@ impl TypeSolver {
 
         for arg in &abstract_layout.args {
             let Some(Constraint::Concrete(c)) = self.get_constraint(*arg) else {
+                debug!(
+                    "Missing argument constraint: {arg:?} = {:?}",
+                    self.get_constraint(*arg)
+                );
                 missing.push(*arg);
                 continue;
             };
@@ -274,6 +300,11 @@ impl TypeSolver {
         }
 
         let Some(Constraint::Concrete(ret)) = self.get_constraint(abstract_layout.ret) else {
+            debug!(
+                "Missing return constraint: {:?} = {:?}",
+                abstract_layout.ret,
+                self.get_constraint(abstract_layout.ret)
+            );
             missing.push(abstract_layout.ret);
             return Err(TypeError::MissingTypes(missing));
         };
@@ -296,7 +327,8 @@ impl TypeSolver {
         let first_id = id;
         let mut constraint = self.constraints.get(id)?;
         while let Constraint::Ref(ref_id) = constraint {
-            if id == first_id {
+            if *ref_id == first_id {
+                debug!("Constraint reference cycle: {id:?} = {first_id:?}");
                 return None;
             }
             id = *ref_id;
@@ -448,7 +480,7 @@ impl TypeSolver {
     }
 
     pub fn merge(&mut self, a: &Constraint, b: &Constraint) -> Result<Constraint, TypeError> {
-        match (a, b) {
+        let constraint = match (a, b) {
             (Constraint::Function(_), Constraint::Concrete(Type::Function(addr)))
             | (Constraint::Concrete(Type::Function(addr)), Constraint::Function(_)) => {
                 Ok(Constraint::Concrete(Type::Function(*addr)))
@@ -525,6 +557,15 @@ impl TypeSolver {
             (Constraint::Function(_), c) | (c, Constraint::Function(_)) => {
                 Err(TypeError::CannotInvoke(c.clone()))
             }
+        };
+        debug!("Merging: {:?} + {:?} = {:?}", a, b, constraint);
+        constraint
+    }
+
+    pub fn log_entries(&self) {
+        #[cfg(feature = "ts_debug")]
+        for (id, entry) in self.constraints.entries().iter().enumerate() {
+            debug!("Final type constraint for ID {id}: {entry:?}");
         }
     }
 }
