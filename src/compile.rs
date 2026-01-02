@@ -126,6 +126,8 @@ pub type State<'a> = StackGuard<'a>;
 
 type RawFunc = for<'a> fn(*const (), State, prev: i64) -> i64;
 
+/// Box<dyn Fn...> introduces an unnecessary layer of indirection via a vtable pointing to a function pointer.
+/// This is a custom wide pointer inspired by https://github.com/zesterer/vm-perf/blob/main/src/closure_continuations.rs#L46-L49
 pub(crate) struct Func<'a> {
     f: RawFunc,
     data: *const (),
