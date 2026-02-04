@@ -1,0 +1,11 @@
+- [ ] Associate AST elements with source location
+  - Use `untwine::Spanned` or preferably an internal type
+  - Can use `#[span]` in untwine to capture the span of a given chunk
+  - Only idents and expressions should need it for now
+- [ ] Implement better errors for type system
+  - Add a way to translate constraint IDs into source locations
+- [ ] Add generic registry
+  - Step in compilation pipeline after type resolution
+  - Functions which have unknown or non-concrete types in their signature will become generic
+  - Non-concrete types that are NOT part of the function signature cannot be resolved
+  - Monomorphize for each function using a HashMap of argument types to compiled function
