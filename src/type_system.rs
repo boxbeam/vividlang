@@ -479,6 +479,9 @@ impl TypeSolver {
         })
     }
 
+    /// Merges a <- b
+    /// References on the left-hand side will mutate the registry entry
+    /// References on the right-hand side will not affect the registry
     pub fn merge(&mut self, a: &Constraint, b: &Constraint) -> Result<Constraint, TypeError> {
         let constraint = match (a, b) {
             (Constraint::Function(_), Constraint::Concrete(Type::Function(addr)))
