@@ -145,6 +145,29 @@ impl<K: Hash + Eq, V, C: CollisionStrategy> Registry<K, V, C> {
     }
 }
 
+impl<K, V> Registry<K, V, NoRedefine>
+where
+    K: Eq + Hash + Debug + Clone,
+    V: Debug,
+{
+    pub fn lookup_or_load<E>(
+        &mut self,
+        key: K,
+        load: impl FnOnce(&K) -> Result<V, E>,
+    ) -> Result<Id<V>, E> {
+        match self.by_name.get(&key).cloned().flatten() {
+            Some(id) => Ok(to_id(id)),
+            None => {
+                let v = load(&key)?;
+                let id = self
+                    .insert(key, v)
+                    .expect("Insertion always succeeds because entry is vacant");
+                Ok(id)
+            }
+        }
+    }
+}
+
 /// Attempting to redefine an already-defined name will result in an error.
 pub struct NoRedefine;
 /// Attempting to redefine an already-defined name will shadow the previous value.
